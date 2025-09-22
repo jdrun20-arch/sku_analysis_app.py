@@ -35,14 +35,15 @@ if uploaded_file is not None:
     expand_facings = st.sidebar.slider("Facings for Expand SKUs", 1, 10, 3)
     retain_facings = st.sidebar.slider("Facings for Retain SKUs", 1, 10, 2)
     delist_facings = st.sidebar.slider("Facings for Delist SKUs", 0, 5, 1)
+    min_facings = st.sidebar.number_input("Minimum Facings (Expand/Retain)", min_value=1, value=2, step=1)
     total_shelf_space = st.sidebar.number_input("Total Shelf Space (inches)", min_value=1.0, value=100.0, step=1.0)
     hide_delist = st.sidebar.checkbox("Hide Delist SKUs from charts & space calc", value=False)
 
     def suggested_facings(rec):
         if rec == "Expand":
-            return expand_facings
+            return max(expand_facings, min_facings)
         elif rec == "Retain":
-            return retain_facings
+            return max(retain_facings, min_facings)
         else:
             return delist_facings
 
@@ -78,11 +79,14 @@ if uploaded_file is not None:
     st.pyplot(fig1)
 
     st.subheader("📊 Per-SKU Space Allocation")
-    df_sorted = df_filtered.sort_values(by="Space Needed", ascending=False)
-    fig2, ax2 = plt.subplots(figsize=(8,4))
-    ax2.barh(df_sorted['SKU'], df_sorted['Space Needed'], color="skyblue")
-    ax2.set_xlabel("Space Needed (inches)")
-    st.pyplot(fig2)
+    if 'SKU' in df_filtered.columns:
+        df_sorted = df_filtered.sort_values(by="Space Needed", ascending=False)
+        fig2, ax2 = plt.subplots(figsize=(8,4))
+        ax2.barh(df_sorted['SKU'], df_sorted['Space Needed'], color="skyblue")
+        ax2.set_xlabel("Space Needed (inches)")
+        st.pyplot(fig2)
+    else:
+        st.warning("No 'SKU' column found for per-SKU visualization.")
 
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("⬇️ Download Results as CSV", csv, "SKU_Recommendations.csv", "text/csv")
