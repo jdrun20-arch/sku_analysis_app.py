@@ -1,91 +1,75 @@
+# sku_analysis_app.py
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+from io import BytesIO
 
-# App title
-st.title("📊 SKU Performance Analysis")
-st.write("Upload your SKU file to get recommendations (Expand, Retain, Delist) with explanations.")
+st.set_page_config(layout="wide", page_title="SKU Performance + Shelf Capacity Analyzer")
 
-# File uploader
-uploaded_file = st.file_uploader("📂 Upload CSV file", type=["csv"])
+st.title("📊 SKU Performance + Shelf Capacity Analyzer (all features)")
 
-if uploaded_file is not None:
-    # Load data
-    df = pd.read_csv(uploaded_file)
+st.write("""
+Upload a CSV with SKU data. The app will auto-detect common column names (Sales, Volume, Margin, Width, Facings).
+You can correct mapping in the sidebar if needed.
+""")
 
-    # Normalize
-    df['Sales_Norm'] = df['Sales'] / df['Sales'].max()
-    df['Volume_Norm'] = df['Volume'] / df['Volume'].max()
-    df['Margin_Norm'] = df['Margin'] / df['Margin'].max()
+# ---------------------------
+# Utility: possible column name synonyms (for auto-detect)
+# ---------------------------
+COL_SYNS = {
+    'Sales': ['sales', 'revenue', 'net_sales', 'sales_amt', 'sales_value'],
+    'Volume': ['volume', 'units', 'qty', 'quantity', 'sales_units'],
+    'Margin': ['margin', 'gross_margin', 'gp', 'profit'],
+    'Width': ['width', 'size', 'item_width', 'pack_width', 'width_in', 'width_cm', 'w'],
+    'Facings': ['facings', 'facing', 'no_facings', 'num_facings', 'faces']
+}
 
-    # Weighted score
-    df['Score'] = (df['Sales_Norm'] * 0.30) + (df['Volume_Norm'] * 0.30) + (df['Margin_Norm'] * 0.40)
+def autodetect_columns(df_columns):
+    mapped = {}
+    cols_lower = {c.lower(): c for c in df_columns}
+    for canonical, syns in COL_SYNS.items():
+        found = None
+        for s in syns:
+            if s.lower() in cols_lower:
+                found = cols_lower[s.lower()]
+                break
+        mapped[canonical] = found
+    return mapped
 
-    # Cutoffs
-    cutoff_expand = df['Score'].quantile(0.70)
-    cutoff_delist = df['Score'].quantile(0.30)
+# ---------------------------
+# Upload
+# ---------------------------
+uploaded_file = st.file_uploader("📂 Upload SKU CSV", type=["csv"])
+if uploaded_file is None:
+    st.info("Upload a CSV to begin. Example columns: SKU, Sales, Volume, Margin, Width (inches or cm), Facings (optional).")
+    st.stop()
 
-    # Classification logic
-    def classify(score):
-        if score >= cutoff_expand:
-            return "Expand"
-        elif score <= cutoff_delist:
-            return "Delist"
-        else:
-            return "Retain"
+# Load CSV
+try:
+    df_raw = pd.read_csv(uploaded_file)
+except Exception as e:
+    st.error(f"Error reading CSV: {e}")
+    st.stop()
 
-    df['Recommendation'] = df['Score'].apply(classify)
+st.sidebar.header("Column mapping (auto-detected)")
+auto_map = autodetect_columns(df_raw.columns)
+# Allow user to correct mappings using selects (or 'None')
+col_map = {}
+for key in ['Sales', 'Volume', 'Margin', 'Width', 'Facings']:
+    col_map[key] = st.sidebar.selectbox(f"{key} column", options=[None] + list(df_raw.columns), index=(1 + list(df_raw.columns).index(auto_map[key]) if auto_map[key] in df_raw.columns else 0))
 
-    # Explanations
-    def explain(row):
-        if row['Recommendation'] == "Expand":
-            return "High sales, volume, or margin → Increase facings or distribution."
-        elif row['Recommendation'] == "Delist":
-            return "Low performance → Candidate for phase-out."
-        else:
-            return "Balanced performance → Maintain current space."
-    
-    def move_out_plan(row):
-        if row['Recommendation'] == "Delist":
-            return "Consider promo bundling, discounting, or supplier return."
-        else:
-            return "-"
-    
-    df['Explanation'] = df.apply(explain, axis=1)
-    df['Move-Out Plan'] = df.apply(move_out_plan, axis=1)
+# If user leaves Sales/Volume/Margin/Width None -> error
+required = ['Sales', 'Volume', 'Margin', 'Width']
+missing_required = [r for r in required if not col_map[r]]
+if missing_required:
+    st.error(f"Please map these required columns in the sidebar: {missing_required}")
+    st.stop()
 
-    # Section: Results
-    st.subheader("📋 Detailed Results")
+# Copy df and rename mapped columns to canonical names
+df = df_raw.copy()
+rename_map = {col_map[k]: k for k in col_map if col_map[k]}
+df = df.rename(columns=rename_map)
 
-    # Color table
-    def color_table(val):
-        if val == "Expand":
-            return "background-color: #c6efce"  # light green
-        elif val == "Delist":
-            return "background-color: #ffc7ce"  # light red
-        elif val == "Retain":
-            return "background-color: #ffeb9c"  # light yellow
-        return ""
-
-    st.dataframe(df.style.applymap(color_table, subset=["Recommendation"]))
-
-    # Section: Summary Chart
-    st.subheader("📊 Summary of Recommendations")
-
-    summary = df['Recommendation'].value_counts()
-
-    fig, ax = plt.subplots()
-    summary.plot(kind='bar', color=["#c6efce", "#ffeb9c", "#ffc7ce"], ax=ax)
-    ax.set_title("Recommendation Breakdown")
-    ax.set_ylabel("Number of SKUs")
-    st.pyplot(fig)
-
-    # Download results
-    st.subheader("⬇️ Download Results")
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download as CSV",
-        data=csv,
-        file_name="SKU_Recommendations.csv",
-        mime="text/csv"
-    )
+# Units: inches or cm
+st.sidebar.
