@@ -97,6 +97,13 @@ if uploaded_file is not None:
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
+    # --- Actionable Message ---
+    num_delist = len(df[df['Recommendation'] == 'Delist'])
+    if space_usage_pct > 100:
+        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_delist} SKU(s) or reduce facings to fit everything.")
+    else:
+        st.success("✅ Your shelf plan fits within the available space.")
+
     # --- Interactive Per-SKU Space Allocation using Plotly ---
     st.subheader("📊 Top SKUs by Space Needed")
     st.write("**Simple explanation:** This chart shows which SKUs take up the most shelf space. Freed-up space from Delist SKUs is distributed to Expand/Retain SKUs.")
