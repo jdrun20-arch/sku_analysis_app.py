@@ -17,6 +17,9 @@ if uploaded_file is not None:
     df['Margin_Norm'] = df['Margin'] / df['Margin'].max()
     df['Score'] = (df['Sales_Norm']*0.3) + (df['Volume_Norm']*0.3) + (df['Margin_Norm']*0.4)
 
+    # --- SKU Performance Ranking ---
+    df['Rank'] = df['Score'].rank(method='min', ascending=False).astype(int)
+
     cutoff_expand = df['Score'].quantile(0.70)
     cutoff_delist = df['Score'].quantile(0.30)
 
@@ -81,41 +84,44 @@ if uploaded_file is not None:
     space_usage_pct = (total_space_used / total_shelf_space) * 100
 
     # --- Detailed Results ---
-    st.subheader("📋 SKU Recommendations")
-    st.write("**What this table tells you:** Each SKU, its recommendation, how many facings it should have, and how much shelf space it needs.")
+    st.subheader("📋 SKU Recommendations & Performance Rank")
+    st.write("**Explanation:** Each SKU's performance, recommended action, suggested facings, and shelf space needed. Rank helps decide which SKUs to delist if space is limited.")
+
     def color_table(val):
         if val == "Expand": return "background-color: #c6efce"
         elif val == "Delist": return "background-color: #ffc7ce"
         elif val == "Retain": return "background-color: #ffeb9c"
         return ""
 
-    st.dataframe(df.style.applymap(color_table, subset=["Recommendation"]), use_container_width=True)
+    st.dataframe(df[['SKU','Score','Rank','Recommendation','Suggested Facings','Space Needed']].style.applymap(color_table, subset=['Recommendation']), use_container_width=True)
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
-    st.write("**Simple explanation:** How much of your shelf is being used. If over 100%, you need to reduce facings or remove SKUs.")
+    st.write("**Simple explanation:** How much of your shelf is being used. Over 100% means you need to remove SKUs or reduce facings.")
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
-    # --- Actionable Message ---
+    # --- Actionable Message with Rank Consideration ---
     if space_usage_pct > 100:
         over_inch = total_space_used - total_shelf_space
-        # Sort by actual Space Needed after all facings adjustments
-        df_sorted = df_filtered.sort_values(by='Space Needed', ascending=False)
+        # Sort by Space Needed descending, lowest rank first for removal priority
+        df_sorted = df_filtered.sort_values(by=['Space Needed','Score'], ascending=[False, True])
         cum_space = 0
         num_skus_to_remove = 0
+        skus_to_remove = []
         for _, row in df_sorted.iterrows():
             cum_space += row['Space Needed']
             num_skus_to_remove += 1
+            skus_to_remove.append(row['SKU'])
             if cum_space >= over_inch:
                 break
-        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_skus_to_remove} SKU(s) or reduce facings to fit everything.")
+        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_skus_to_remove} SKU(s) or reduce facings. Suggested SKUs to remove based on space and performance: {', '.join(skus_to_remove)}")
     else:
         st.success("✅ Your shelf plan fits within the available space.")
 
     # --- Interactive Per-SKU Space Allocation using Plotly ---
     st.subheader("📊 Top SKUs by Space Needed")
-    st.write("**Simple explanation:** This chart shows which SKUs take up the most shelf space. Freed-up space from Delist SKUs is distributed to Expand/Retain SKUs.")
+    st.write("**Explanation:** This chart shows which SKUs take up the most shelf space. Freed-up space from Delist SKUs is distributed to Expand/Retain SKUs.")
 
     if 'SKU' not in df_filtered.columns:
         text_cols = df_filtered.select_dtypes(include='object').columns.tolist()
