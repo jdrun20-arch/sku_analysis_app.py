@@ -93,14 +93,21 @@ if uploaded_file is not None:
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
     st.write("**Simple explanation:** How much of your shelf is being used. If over 100%, you need to reduce facings or remove SKUs.")
-    bar_color = 'green' if space_usage_pct <= 100 else 'red'
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
     # --- Actionable Message ---
-    num_delist = len(df[df['Recommendation'] == 'Delist'])
     if space_usage_pct > 100:
-        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_delist} SKU(s) or reduce facings to fit everything.")
+        over_inch = total_space_used - total_shelf_space
+        delist_df = df[df['Recommendation'] == 'Delist'].sort_values(by='Space Needed', ascending=False)
+        cum_space = 0
+        num_skus_to_remove = 0
+        for _, row in delist_df.iterrows():
+            cum_space += row['Space Needed']
+            num_skus_to_remove += 1
+            if cum_space >= over_inch:
+                break
+        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_skus_to_remove} SKU(s) or reduce facings to fit everything.")
     else:
         st.success("✅ Your shelf plan fits within the available space.")
 
