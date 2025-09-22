@@ -76,6 +76,7 @@ if uploaded_file is not None:
     else:
         df_filtered = df.copy()
 
+    # --- Recalculate total space used ---
     total_space_used = df_filtered['Space Needed'].sum()
     space_usage_pct = (total_space_used / total_shelf_space) * 100
 
@@ -99,7 +100,7 @@ if uploaded_file is not None:
     # --- Actionable Message ---
     if space_usage_pct > 100:
         over_inch = total_space_used - total_shelf_space
-        # Consider all SKUs sorted by Space Needed descending
+        # Sort by actual Space Needed after all facings adjustments
         df_sorted = df_filtered.sort_values(by='Space Needed', ascending=False)
         cum_space = 0
         num_skus_to_remove = 0
