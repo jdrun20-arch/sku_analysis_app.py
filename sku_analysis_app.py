@@ -62,9 +62,12 @@ if uploaded_file is not None:
     retain_facings = st.sidebar.slider("Facings for Retain SKUs", 1, 10, 2)
     delist_facings = st.sidebar.slider("Facings for Delist SKUs", 0, 5, 1)
     min_facings = st.sidebar.number_input("Minimum Facings (Expand/Retain)", 1, 10, 2)
-    total_shelf_space = st.sidebar.number_input("Total Shelf Space (inches)", 1.0, 10000.0, 100.0, 1.0)
+    shelf_width = st.sidebar.number_input("Shelf width per layer (inches)", 1.0, 10000.0, 100.0, 1.0)
+    num_layers = st.sidebar.number_input("Number of layers in gondola", 1, 20, 1)
     hide_delist = st.sidebar.checkbox("Hide Delist SKUs from charts & space calc", value=False)
     top_n_skus = st.sidebar.slider("Number of SKUs to show in chart", 10, 100, 50, 5)
+
+    total_shelf_space = shelf_width * num_layers
 
     # --- Suggested Facings ---
     def base_facings(rec):
@@ -120,7 +123,7 @@ if uploaded_file is not None:
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
-    st.write("**Explanation:** How much of your shelf is being used. Over 100% means you need to remove SKUs or reduce facings.")
+    st.write("**Explanation:** How much of your shelf is being used across all layers. Over 100% means you need to remove SKUs or reduce facings.")
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
@@ -176,6 +179,4 @@ if uploaded_file is not None:
     fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=25*len(df_chart))
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- Download CSV ---
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Download Results as CSV", csv, "SKU_Recommendations.csv", "text/csv")
+    # ---
