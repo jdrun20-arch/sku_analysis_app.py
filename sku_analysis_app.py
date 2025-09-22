@@ -122,9 +122,9 @@ if uploaded_file is not None:
     else:
         st.success("✅ Your shelf plan fits within the available space.")
 
-    # --- Interactive Per-SKU Space Allocation using Plotly ---
+    # --- Interactive Per-SKU Space Allocation using Plotly with Item Size ---
     st.subheader("📊 Top SKUs by Space Needed")
-    st.write("**Explanation:** This chart shows which SKUs take up the most shelf space. Freed-up space from Delist SKUs is distributed to Expand/Retain SKUs.")
+    st.write("**Explanation:** This chart shows which SKUs take up the most shelf space. Hover to see item width and suggested facings.")
 
     if 'SKU' not in df_filtered.columns:
         text_cols = df_filtered.select_dtypes(include='object').columns.tolist()
@@ -136,8 +136,19 @@ if uploaded_file is not None:
         df_filtered['SKU_Label'] = df_filtered['SKU']
 
     df_chart = df_filtered.sort_values(by='Space Needed', ascending=False).head(top_n_skus)
-    fig = px.bar(df_chart, y='SKU_Label', x='Space Needed', color='Recommendation', orientation='h',
-                 color_discrete_map={'Expand':'#4CAF50', 'Retain':'#FFC107', 'Delist':'#F44336'})
+    fig = px.bar(
+        df_chart,
+        y='SKU_Label',
+        x='Space Needed',
+        color='Recommendation',
+        orientation='h',
+        hover_data={
+            'Space Needed': ':.1f',
+            'Width': ':.1f',
+            'Suggested Facings': True
+        },
+        color_discrete_map={'Expand':'#4CAF50', 'Retain':'#FFC107', 'Delist':'#F44336'}
+    )
     fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=25*len(df_chart))
     st.plotly_chart(fig, use_container_width=True)
 
