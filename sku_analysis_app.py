@@ -42,7 +42,6 @@ def ensure_columns(df, cols):
     return missing
 
 def compute_score(df, sales_col="Sales", volume_col="Volume", margin_col="Margin"):
-    # Normalize safely
     df = df.copy()
     for c in [sales_col, volume_col, margin_col]:
         if c not in df.columns:
@@ -123,7 +122,6 @@ if module == "SKU Performance & Shelf Space":
             default_width = st.sidebar.number_input("Default SKU width (inches, used if 'Width' missing)", min_value=0.1, value=5.0, step=0.1)
             df['Width'] = default_width
         else:
-            # convert to numeric safely
             df['Width'] = pd.to_numeric(df['Width'], errors='coerce').fillna(st.sidebar.number_input("Default SKU width (inches) (fallback)", min_value=0.1, value=5.0, step=0.1))
 
         # Initial space needed
@@ -132,8 +130,7 @@ if module == "SKU Performance & Shelf Space":
         # Redistribute freed space if Delist facings = 0
         if delist_facings == 0:
             delist_mask = df['Recommendation'] == 'Delist'
-            freed_space = df.loc[delist_mask, 'Width'] * base_fac('Delist')
-            freed_total = freed_space.sum()
+            freed_total = (df.loc[delist_mask, 'Width'] * base_fac('Delist')).sum()
             expand_retain_mask = df['Recommendation'].isin(['Expand','Retain'])
             denom = (df.loc[expand_retain_mask, 'Width'] * df.loc[expand_retain_mask, 'Base Facings']).sum()
             if denom > 0 and freed_total > 0:
@@ -152,11 +149,6 @@ if module == "SKU Performance & Shelf Space":
             df_filtered = df[df['Recommendation'] != "Delist"].copy()
         else:
             df_filtered = df.copy()
-
-        # Load approved insights optionally for context (but this module stays separate)
-        insights_df = pd.read_csv(INSIGHTS_FILE)
-        approved = insights_df[insights_df['Status'] == "Approved"][['Date', 'Store Code', 'Insight Type', 'Details']]
-        # We won't merge by date here because SKU module does not use Date in SKU file generally.
 
         # Total space used and percent
         total_used = df_filtered['Space_Needed'].sum()
@@ -188,7 +180,7 @@ if module == "SKU Performance & Shelf Space":
             to_remove = []
             for _, r in df_sorted.iterrows():
                 cum += r['Space_Needed']
-                to_remove.append(r['SKU'])
+                to_remove.append(str(r['SKU']))
                 if cum >= over_inch:
                     break
             st.warning(
@@ -254,7 +246,6 @@ elif module == "Sales Analysis":
         # Detect spikes: For each SKU+Store, compute rolling mean and compare
         daily = daily.sort_values(['Store Code','SKU','Date'])
         daily['RollingMean'] = daily.groupby(['Store Code','SKU'])['Sales'].transform(lambda s: s.shift(1).rolling(window=window_days, min_periods=1).mean().fillna(0))
-        # Avoid division by zero
         daily['RollingMean'] = daily['RollingMean'].replace(0, 1e-9)
         daily['Spike'] = daily['Sales'] >= (daily['RollingMean'] * spike_multiplier)
         daily['PctChange'] = ((daily['Sales'] - daily['RollingMean']) / daily['RollingMean']) * 100
@@ -266,29 +257,26 @@ elif module == "Sales Analysis":
 
         # Match spikes to approved insights by same Date and Store Code
         daily['Matched Insight'] = None
-        # we match on exact date (same day) - can be extended to a date range
         for idx, r in daily[daily['Spike']].iterrows():
             same = approved[(approved['Date'] == r['Date']) & (approved['Store Code'].astype(str) == str(r['Store Code']))]
             if not same.empty:
-                # join all insights (if multiple)
-                daily.at[idx, 'Matched Insight'] = "; ".join(same['Insight Type'].astype(str) + ": " + same['Details'].astype(str))
+                daily.at[idx, 'Matched Insight'] = "; ".join((same['Insight Type'].astype(str) + ": " + same['Details'].astype(str)).tolist())
 
         # Display spikes
-        spikes = daily[daily['Spike']].sort_values(['Date','Store Code','PctChange'], ascending=[False,True,False])
+        spikes = daily[daily['Spike']].sort_values(['PctChange','Date'], ascending=[False, False])
 
         st.subheader("Detected Sales Spikes")
         st.write(f"Spike rule: Sales >= {spike_multiplier} × rolling mean (previous {window_days} days).")
         if spikes.empty:
             st.info("No spikes detected using current settings.")
         else:
-            # Show with matched insights
             display_cols = ['Date','Store Code','SKU','Sales','RollingMean','PctChange','Matched Insight']
             st.dataframe(spikes[display_cols].sort_values('PctChange', ascending=False).reset_index(drop=True), use_container_width=True)
 
-            # Allow user to inspect a specific spike
             st.subheader("Inspect Spike")
-            sel = st.selectbox("Select spike to inspect (by index)", spikes.index.tolist())
-            r = spikes.loc[sel]
+            spike_indices = spikes.index.tolist()
+            sel_idx = st.selectbox("Select spike to inspect (by index)", spike_indices)
+            r = spikes.loc[sel_idx]
             st.write(f"Date: {r['Date'].date()}, Store: {r['Store Code']}, SKU: {r['SKU']}")
             st.write(f"Sales: {r['Sales']:.1f}, Rolling mean: {r['RollingMean']:.1f}, Change: {r['PctChange']:.1f}%")
             if pd.notna(r['Matched Insight']):
@@ -298,7 +286,46 @@ elif module == "Sales Analysis":
 
         # Quick chart: aggregate daily sales for a selected SKU+Store
         st.subheader("Sales Trend for a SKU (choose to view)")
-        sku_opt = st.selectbox("Choose a SKU (Store+SKU)", daily.apply(lambda r: f"{r['Store Code']} | {r['SKU']}", axis=1).unique())
-        store_code, sku_sel = sku_opt.split(" | ")
-        sel_df = daily[(daily['Store Code'].astype(str) == store_code) & (daily['SKU'] == sku_sel)].sort_values('Date')
-        fig = px.line(sel_df, x='Date', y='Sales', tit_
+        # Build options for selectbox
+        unique_opts = daily.apply(lambda row: f"{row['Store Code']} | {row['SKU']}", axis=1).unique().tolist()
+        if unique_opts:
+            sku_opt = st.selectbox("Choose a SKU (Store | SKU)", unique_opts)
+            store_code, sku_sel = [s.strip() for s in sku_opt.split("|")]
+            sel_df = daily[(daily['Store Code'].astype(str) == store_code) & (daily['SKU'] == sku_sel)].sort_values('Date')
+            if not sel_df.empty:
+                fig = px.line(sel_df, x='Date', y='Sales', title=f"Sales trend - Store {store_code}, SKU {sku_sel}")
+                fig.add_scatter(x=sel_df['Date'], y=sel_df['RollingMean'], mode='lines', name='Rolling Mean')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No data for selected SKU+Store.")
+
+# ----------------------------
+# MODULE: Submit Insight
+# ----------------------------
+elif module == "Submit Insight":
+    st.title("📝 Submit Insight")
+    st.markdown("Field users can submit observations/events here (e.g., Rally, Class suspended, Promo). These go to the manager for approval.")
+
+    with st.form("insight_form"):
+        date_input = st.date_input("Date of event")
+        store_code = st.text_input("Store Code")
+        insight_type = st.selectbox("Insight Type", ["External Event", "Class Suspended", "Promo", "Competitor Activity", "Other"])
+        details = st.text_area("Details / Description")
+        submitted_by = st.text_input("Submitted By (name)")
+        submitted = st.form_submit_button("Submit Insight")
+
+        if submitted:
+            if not store_code or not details or not submitted_by:
+                st.error("Please fill Store Code, Details, and Submitted By.")
+            else:
+                df_ins = pd.read_csv(INSIGHTS_FILE)
+                new = {
+                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Date": date_input.strftime("%Y-%m-%d"),
+                    "Store Code": str(store_code),
+                    "Insight Type": insight_type,
+                    "Details": details,
+                    "Status": "Pending Approval",
+                    "Submitted By": submitted_by
+                }
+                df_ins = pd.concat([df_ins, pd.DataFrame([new])], ignore_index=True)
