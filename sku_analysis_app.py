@@ -47,14 +47,17 @@ if module == "1️⃣ SKU Performance & Shelf Space":
                     return "Retain"
 
             df['Recommendation'] = df['Score'].apply(classify)
-            df['Suggested Facings'] = df['Recommendation'].map({"Expand": 3, "Retain": 2, "Delist": 0})
+
+            # Restore previous behavior: Delist facings = 1
+            df['Suggested Facings'] = df['Recommendation'].map({"Expand": 3, "Retain": 2, "Delist": 1})
+
             df['Space Needed'] = df['Width'] * df['Suggested Facings']
 
             st.subheader("Detailed Results")
             st.dataframe(df)
 
             st.subheader("Top SKUs by Space Needed")
-            df_sorted = df.sort_values("Space Needed", ascending=False).head(20)
+            df_sorted = df.sort_values("Space Needed", ascending=False)
             fig = px.bar(df_sorted, x="Space Needed", y="SKU", orientation="h",
                          hover_data=["Width", "Suggested Facings"], title="Top SKUs by Space Needed")
             st.plotly_chart(fig, use_container_width=True)
