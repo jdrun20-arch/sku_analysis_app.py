@@ -6,7 +6,7 @@ st.set_page_config(layout="wide")
 
 st.title("📊 SKU Performance & Shelf Space Optimizer")
 
-uploaded_file = st.file_uploader("📂 Upload CSV file", type=["csv"])
+uploaded_file = st.file_uploader("📂 Upload your CSV file", type=["csv"])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
@@ -64,8 +64,6 @@ if uploaded_file is not None:
         freed_space = delist_space.sum()
         expand_retain_mask = df['Recommendation'].isin(['Expand', 'Retain'])
         total_expand_retain_width = (df.loc[expand_retain_mask, 'Width'] * df.loc[expand_retain_mask, 'Base Facings']).sum()
-
-        # Extra facings proportional to space used
         df.loc[expand_retain_mask, 'Extra Facings'] = (df.loc[expand_retain_mask, 'Width'] * df.loc[expand_retain_mask, 'Base Facings'] / total_expand_retain_width * freed_space / df.loc[expand_retain_mask, 'Width']).fillna(0)
     else:
         df['Extra Facings'] = 0
@@ -82,7 +80,8 @@ if uploaded_file is not None:
     space_usage_pct = (total_space_used / total_shelf_space) * 100
 
     # --- Detailed Results ---
-    st.subheader("📋 Detailed Results")
+    st.subheader("📋 SKU Recommendations")
+    st.write("**What this table tells you:** Each SKU, its recommendation, how many facings it should have, and how much shelf space it needs.")
     def color_table(val):
         if val == "Expand": return "background-color: #c6efce"
         elif val == "Delist": return "background-color: #ffc7ce"
@@ -93,13 +92,14 @@ if uploaded_file is not None:
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
-    st.write("**Explanation:** Total shelf space needed versus available. Over 100% indicates overcapacity.")
+    st.write("**Simple explanation:** How much of your shelf is being used. If over 100%, you need to reduce facings or remove SKUs.")
+    bar_color = 'green' if space_usage_pct <= 100 else 'red'
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
     # --- Interactive Per-SKU Space Allocation using Plotly ---
-    st.subheader("📊 Per-SKU Space Allocation")
-    st.write("**Explanation:** Top SKUs consuming the most shelf space; redistributed space included if Delist facings are 0.")
+    st.subheader("📊 Top SKUs by Space Needed")
+    st.write("**Simple explanation:** This chart shows which SKUs take up the most shelf space. Freed-up space from Delist SKUs is distributed to Expand/Retain SKUs.")
 
     if 'SKU' not in df_filtered.columns:
         text_cols = df_filtered.select_dtypes(include='object').columns.tolist()
