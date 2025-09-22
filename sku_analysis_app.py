@@ -1,16 +1,16 @@
-import pandas as pd
 import streamlit as st
-import io
-import openpyxl
-from openpyxl.styles import PatternFill
+import pandas as pd
+import matplotlib.pyplot as plt
 
-st.title("📊 SKU Performance Analyzer")
-st.write("Upload your SKU list to get Expand/Retain/Delist recommendations with explanations and action plans.")
+# App title
+st.title("📊 SKU Performance Analysis")
+st.write("Upload your SKU file to get recommendations (Expand, Retain, Delist) with explanations.")
 
-# Upload CSV
-uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
+# File uploader
+uploaded_file = st.file_uploader("📂 Upload CSV file", type=["csv"])
 
 if uploaded_file is not None:
+    # Load data
     df = pd.read_csv(uploaded_file)
 
     # Normalize
@@ -18,72 +18,76 @@ if uploaded_file is not None:
     df['Volume_Norm'] = df['Volume'] / df['Volume'].max()
     df['Margin_Norm'] = df['Margin'] / df['Margin'].max()
 
-    # Weighted Score
+    # Weighted score
     df['Score'] = (df['Sales_Norm'] * 0.30) + (df['Volume_Norm'] * 0.30) + (df['Margin_Norm'] * 0.40)
 
-    # Classification
+    # Cutoffs
     cutoff_expand = df['Score'].quantile(0.70)
     cutoff_delist = df['Score'].quantile(0.30)
 
-    def classify_with_details(score, sales, volume, margin):
+    # Classification logic
+    def classify(score):
         if score >= cutoff_expand:
-            return (
-                "Expand",
-                "High sales, strong margins, or high volume – a growth driver for the category.",
-                "Increase shelf space, add more facings, consider promotion support or multi-store rollout."
-            )
+            return "Expand"
         elif score <= cutoff_delist:
-            return (
-                "Delist",
-                "Low sales, weak margins, or slow movement – low contribution to overall performance.",
-                "Plan clearance: run promo bundling, offer buy-1-take-1, or markdowns to clear stock."
-            )
+            return "Delist"
         else:
-            return (
-                "Retain",
-                "Moderate performance – contributes steadily without underperforming.",
-                "Maintain current shelf space, monitor performance quarterly."
-            )
+            return "Retain"
 
-    df[['Recommendation', 'Explanation', 'Action Plan']] = df.apply(
-        lambda row: pd.Series(classify_with_details(row['Score'], row['Sales'], row['Volume'], row['Margin'])),
-        axis=1
-    )
+    df['Recommendation'] = df['Score'].apply(classify)
 
-    # Show table in app
-    st.dataframe(df[['SKU Name', 'Sales', 'Volume', 'Margin', 'Score', 'Recommendation', 'Explanation', 'Action Plan']])
-
-    # Export to Excel with color formatting
-    output = io.BytesIO()
-    df.to_excel(output, index=False)
-    output.seek(0)
-
-    # Open Excel with openpyxl and apply colors
-    wb = openpyxl.load_workbook(output)
-    ws = wb.active
-
-    header = [cell.value for cell in ws[1]]
-    recommendation_col = header.index("Recommendation") + 1
-
-    for row in range(2, ws.max_row + 1):
-        cell = ws.cell(row=row, column=recommendation_col)
-        if cell.value == "Expand":
-            cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        elif cell.value == "Delist":
-            cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    # Explanations
+    def explain(row):
+        if row['Recommendation'] == "Expand":
+            return "High sales, volume, or margin → Increase facings or distribution."
+        elif row['Recommendation'] == "Delist":
+            return "Low performance → Candidate for phase-out."
         else:
-            cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+            return "Balanced performance → Maintain current space."
+    
+    def move_out_plan(row):
+        if row['Recommendation'] == "Delist":
+            return "Consider promo bundling, discounting, or supplier return."
+        else:
+            return "-"
+    
+    df['Explanation'] = df.apply(explain, axis=1)
+    df['Move-Out Plan'] = df.apply(move_out_plan, axis=1)
 
-    # Save the formatted file to memory again
-    formatted_output = io.BytesIO()
-    wb.save(formatted_output)
-    formatted_output.seek(0)
+    # Section: Results
+    st.subheader("📋 Detailed Results")
 
-    # Download Button
+    # Color table
+    def color_table(val):
+        if val == "Expand":
+            return "background-color: #c6efce"  # light green
+        elif val == "Delist":
+            return "background-color: #ffc7ce"  # light red
+        elif val == "Retain":
+            return "background-color: #ffeb9c"  # light yellow
+        return ""
+
+    st.dataframe(df.style.applymap(color_table, subset=["Recommendation"]))
+
+    # Section: Summary Chart
+    st.subheader("📊 Summary of Recommendations")
+
+    summary = df['Recommendation'].value_counts()
+
+    fig, ax = plt.subplots()
+    summary.plot(kind='bar', color=["#c6efce", "#ffeb9c", "#ffc7ce"], ax=ax)
+    ax.set_title("Recommendation Breakdown")
+    ax.set_ylabel("Number of SKUs")
+    st.pyplot(fig)
+
+    # Download results
+    st.subheader("⬇️ Download Results")
+    csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Download Excel with Recommendations",
-        data=formatted_output,
-        file_name="SKU_Recommendations.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        label="Download as CSV",
+        data=csv,
+        file_name="SKU_Recommendations.csv",
+        mime="text/csv"
     )
+
 
