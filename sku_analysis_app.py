@@ -41,7 +41,7 @@ if uploaded_file is not None:
     top_n_skus = st.sidebar.slider("Number of SKUs to show in chart", 10, 100, 50, 5)
 
     # --- Suggested Facings ---
-    def suggested_facings(rec):
+    def base_facings(rec):
         if rec == "Expand":
             return max(expand_facings, min_facings)
         elif rec == "Retain":
@@ -49,13 +49,28 @@ if uploaded_file is not None:
         else:
             return delist_facings
 
-    df['Suggested Facings'] = df['Recommendation'].apply(suggested_facings)
+    df['Base Facings'] = df['Recommendation'].apply(base_facings)
 
-    # --- Space Needed ---
+    # --- Handle Width ---
     if 'Width' not in df.columns:
         default_width = st.sidebar.number_input("Default SKU Width (inches)", 1.0, 100.0, 5.0, 0.1)
         df['Width'] = default_width
 
+    df['Space Needed'] = df['Width'] * df['Base Facings']
+
+    # --- Redistribute freed-up space from Delist SKUs ---
+    if delist_facings == 0:
+        delist_space = (df['Recommendation'] == 'Delist') * df['Width'] * base_facings('Delist')
+        freed_space = delist_space.sum()
+        expand_retain_mask = df['Recommendation'].isin(['Expand', 'Retain'])
+        total_expand_retain_width = (df.loc[expand_retain_mask, 'Width'] * df.loc[expand_retain_mask, 'Base Facings']).sum()
+
+        # Extra facings proportional to space used
+        df.loc[expand_retain_mask, 'Extra Facings'] = (df.loc[expand_retain_mask, 'Width'] * df.loc[expand_retain_mask, 'Base Facings'] / total_expand_retain_width * freed_space / df.loc[expand_retain_mask, 'Width']).fillna(0)
+    else:
+        df['Extra Facings'] = 0
+
+    df['Suggested Facings'] = df['Base Facings'] + df['Extra Facings']
     df['Space Needed'] = df['Width'] * df['Suggested Facings']
 
     if hide_delist:
@@ -78,16 +93,15 @@ if uploaded_file is not None:
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
-    st.write("**Explanation:** This shows the total shelf space required by the current SKU plan relative to the available shelf space. Values above 100% indicate the plan exceeds your shelf capacity and needs adjustment.")
+    st.write("**Explanation:** Total shelf space needed versus available. Over 100% indicates overcapacity.")
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
     # --- Interactive Per-SKU Space Allocation using Plotly ---
     st.subheader("📊 Per-SKU Space Allocation")
-    st.write("**Explanation:** Displays the top SKUs that consume the most shelf space. This helps identify which SKUs take up the largest portion of your shelves and may require facing adjustments.")
+    st.write("**Explanation:** Top SKUs consuming the most shelf space; redistributed space included if Delist facings are 0.")
 
     if 'SKU' not in df_filtered.columns:
-        # fallback: use first text column or create dummy SKU names
         text_cols = df_filtered.select_dtypes(include='object').columns.tolist()
         if text_cols:
             df_filtered['SKU_Label'] = df_filtered[text_cols[0]]
