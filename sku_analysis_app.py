@@ -33,6 +33,17 @@ if uploaded_file is not None:
 
     df['Recommendation'] = df['Score'].apply(classify)
 
+    # --- Justification Column ---
+    def justify(row):
+        if row['Recommendation'] == "Expand":
+            return "High sales, volume, or margin → increase facings or distribution."
+        elif row['Recommendation'] == "Delist":
+            return "Low performance → candidate for phase-out."
+        else:
+            return "Balanced performance → maintain current space."
+
+    df['Justification'] = df.apply(justify, axis=1)
+
     # --- Sidebar Settings ---
     st.sidebar.header("⚙️ Settings")
     expand_facings = st.sidebar.slider("Facings for Expand SKUs", 1, 10, 3)
@@ -85,7 +96,7 @@ if uploaded_file is not None:
 
     # --- Detailed Results ---
     st.subheader("📋 SKU Recommendations & Performance Rank")
-    st.write("**Explanation:** Each SKU's performance, recommended action, suggested facings, and shelf space needed. Rank helps decide which SKUs to delist if space is limited.")
+    st.write("**Explanation:** Each SKU's performance, recommended action, justification, suggested facings, and shelf space needed. Rank helps decide which SKUs to delist if space is limited.")
 
     def color_table(val):
         if val == "Expand": return "background-color: #c6efce"
@@ -93,7 +104,7 @@ if uploaded_file is not None:
         elif val == "Retain": return "background-color: #ffeb9c"
         return ""
 
-    st.dataframe(df[['SKU','Score','Rank','Recommendation','Suggested Facings','Space Needed']].style.applymap(color_table, subset=['Recommendation']), use_container_width=True)
+    st.dataframe(df[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Space Needed']].style.applymap(color_table, subset=['Recommendation']), use_container_width=True)
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
@@ -145,7 +156,8 @@ if uploaded_file is not None:
         hover_data={
             'Space Needed': ':.1f',
             'Width': ':.1f',
-            'Suggested Facings': True
+            'Suggested Facings': True,
+            'Justification': True
         },
         color_discrete_map={'Expand':'#4CAF50', 'Retain':'#FFC107', 'Delist':'#F44336'}
     )
