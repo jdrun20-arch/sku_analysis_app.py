@@ -99,10 +99,11 @@ if uploaded_file is not None:
     # --- Actionable Message ---
     if space_usage_pct > 100:
         over_inch = total_space_used - total_shelf_space
-        delist_df = df[df['Recommendation'] == 'Delist'].sort_values(by='Space Needed', ascending=False)
+        # Consider all SKUs sorted by Space Needed descending
+        df_sorted = df_filtered.sort_values(by='Space Needed', ascending=False)
         cum_space = 0
         num_skus_to_remove = 0
-        for _, row in delist_df.iterrows():
+        for _, row in df_sorted.iterrows():
             cum_space += row['Space Needed']
             num_skus_to_remove += 1
             if cum_space >= over_inch:
