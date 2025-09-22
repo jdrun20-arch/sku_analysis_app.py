@@ -44,6 +44,18 @@ if uploaded_file is not None:
 
     df['Justification'] = df.apply(justify, axis=1)
 
+    # --- SKU Recommendation Summary ---
+    st.subheader("📊 SKU Recommendation Summary")
+    total_skus = len(df)
+    num_expand = len(df[df['Recommendation']=='Expand'])
+    num_retain = len(df[df['Recommendation']=='Retain'])
+    num_delist = len(df[df['Recommendation']=='Delist'])
+
+    st.write(f"Total SKUs uploaded: {total_skus}")
+    st.write(f"Expand SKUs: {num_expand}")
+    st.write(f"Retain SKUs: {num_retain}")
+    st.write(f"Delist SKUs: {num_delist}")
+
     # --- Sidebar Settings ---
     st.sidebar.header("⚙️ Settings")
     expand_facings = st.sidebar.slider("Facings for Expand SKUs", 1, 10, 3)
@@ -135,7 +147,7 @@ if uploaded_file is not None:
 
     # --- Interactive Per-SKU Space Allocation using Plotly with Item Size ---
     st.subheader("📊 Top SKUs by Space Needed")
-    st.write("**Explanation:** This chart shows which SKUs take up the most shelf space. Hover to see item width and suggested facings.")
+    st.write("**Explanation:** This chart shows which SKUs take up the most shelf space. Hover to see item width, suggested facings, and justification.")
 
     if 'SKU' not in df_filtered.columns:
         text_cols = df_filtered.select_dtypes(include='object').columns.tolist()
