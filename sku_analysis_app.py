@@ -97,14 +97,13 @@ if uploaded_file is not None:
 
     # --- Shelf Space Usage ---
     st.subheader("📊 Shelf Space Usage")
-    st.write("**Simple explanation:** How much of your shelf is being used. Over 100% means you need to remove SKUs or reduce facings.")
+    st.write("**Explanation:** How much of your shelf is being used. Over 100% means you need to remove SKUs or reduce facings.")
     st.progress(min(space_usage_pct/100, 1.0))
     st.write(f"Used: {total_space_used:.1f}/{total_shelf_space} in ({space_usage_pct:.1f}%)")
 
-    # --- Actionable Message with Rank Consideration ---
+    # --- Actionable Message with Line Breaks ---
     if space_usage_pct > 100:
         over_inch = total_space_used - total_shelf_space
-        # Sort by Space Needed descending, lowest rank first for removal priority
         df_sorted = df_filtered.sort_values(by=['Space Needed','Score'], ascending=[False, True])
         cum_space = 0
         num_skus_to_remove = 0
@@ -115,7 +114,11 @@ if uploaded_file is not None:
             skus_to_remove.append(row['SKU'])
             if cum_space >= over_inch:
                 break
-        st.warning(f"⚠️ Shelf space is full! You may need to remove {num_skus_to_remove} SKU(s) or reduce facings. Suggested SKUs to remove based on space and performance: {', '.join(skus_to_remove)}")
+        st.text(
+            f"⚠️ Shelf space is full!\n"
+            f"You may need to remove {num_skus_to_remove} SKU(s) or reduce facings.\n"
+            f"Suggested SKUs to remove based on space and performance:\n- " + "\n- ".join(skus_to_remove)
+        )
     else:
         st.success("✅ Your shelf plan fits within the available space.")
 
