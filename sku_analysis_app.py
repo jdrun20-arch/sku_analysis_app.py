@@ -202,6 +202,34 @@ if module == "SKU Performance & Shelf Space":
             df_alloc[download_cols].to_excel(excel_file, index=False)
             with open(excel_file,"rb") as f:
                 st.download_button("Download Excel", f, file_name=excel_file)
+# --- SUMMARY BY PRODUCT TYPE & VARIANT ---
+summary = (
+    sku.groupby(['Product Type','Variant','Recommendation'])
+    .size()
+    .reset_index(name='Count')
+    .sort_values(['Product Type','Variant','Recommendation'])
+)
+
+st.subheader("📋 SKU Summary by Product Type & Variant")
+col_summary_table, col_summary_chart = st.columns([1,2])
+
+with col_summary_table:
+    st.dataframe(summary, use_container_width=True)
+
+with col_summary_chart:
+    import plotly.express as px
+    fig_summary = px.bar(
+        summary,
+        x="Variant",
+        y="Count",
+        color="Recommendation",
+        barmode="group",
+        facet_col="Product Type",
+        text="Count"
+    )
+    fig_summary.update_traces(textposition="outside")
+    fig_summary.update_layout(height=400, showlegend=True)
+    st.plotly_chart(fig_summary, use_container_width=True)
 
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
