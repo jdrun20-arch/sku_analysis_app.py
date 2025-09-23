@@ -207,10 +207,81 @@ if module == "SKU Performance & Shelf Space":
             st.plotly_chart(fig, use_container_width=True)
 
 # ========== MODULE 2: Sales Analysis ==========
-# ... Keep your existing Sales Analysis code here ...
+elif module == "Sales Analysis":
+    st.header("📈 Sales Analysis & Insight Matching")
+    sales_file = st.file_uploader("Upload Sales CSV", type=["csv"])
+    if sales_file is None:
+        st.info("Upload a sales CSV.")
+    else:
+        sales_raw = pd.read_csv(sales_file)
+        sales = normalize_colnames(sales_raw)
+        if 'Date' not in sales.columns or 'Sales' not in sales.columns:
+            st.error("Missing Date or Sales columns.")
+        else:
+            sales['Date'] = pd.to_datetime(sales['Date'], errors='coerce')
+            sales = sales.dropna(subset=['Date']).copy()
+            sales['Sales'] = clean_sales_series(sales['Sales'])
+            if 'Store Code' not in sales.columns:
+                sales['Store Code'] = "ALL"
 
-# ========== MODULE 3: Submit Insight ==========
-# ... Keep your existing Submit Insight code here ...
+            store_list = sales['Store Code'].unique().tolist()
+            selected = st.multiselect("Select store(s)", store_list, default=store_list)
+            min_date, max_date = sales['Date'].min().date(), sales['Date'].max().date()
+            dr = st.date_input("Date range", [min_date, max_date])
+            start_d, end_d = pd.to_datetime(dr[0]), pd.to_datetime(dr[1])
 
-# ========== MODULE 4: Approve Insights ==========
-# ... Keep your existing Approve Insights code here ...
+            sel = sales[(sales['Store Code'].isin(selected)) & (sales['Date'].between(start_d, end_d))].copy()
+            if sel.empty:
+                st.info("No data for selection.")
+            else:
+                sel['Baseline'] = np.nan
+                for store, group in sel.groupby('Store Code'):
+                    idxs = group.index.tolist()
+                    if len(group) == 1:
+                        sel.loc[idxs, 'Baseline'] = np.nan
+                    else:
+                        for i in idxs:
+                            sel.loc[i, 'Baseline'] = group.loc[group.index != i, 'Sales'].mean()
+                sel['ChangePct'] = (sel['Sales'] - sel['Baseline']) / sel['Baseline'] * 100
+
+                pct_thr_up = st.sidebar.slider("Lift threshold (%)", 10, 500, 50, 5)
+                pct_thr_down = st.sidebar.slider("Drop threshold (%)", 5, 200, 30, 5)
+
+                insights_df = ensure_insights_df()
+                insights_approved = insights_df[insights_df['Status'].str.lower() == 'approved'].copy()
+                sel['Date_key'] = sel['Date'].dt.strftime("%Y-%m-%d")
+                merged = pd.merge(sel, insights_approved, how='left', left_on=['Store Code','Date_key'], right_on=['Store Code','Date'])
+                merged['Matched Insight'] = merged['Insight'].fillna("")
+
+                def classify_row(r):
+                    if r['Matched Insight']:
+                        if pd.isna(r['Baseline']):
+                            store_mean = sales[sales['Store Code']==r['Store Code']]['Sales'].mean()
+                            return "LIFT" if r['Sales'] >= store_mean else "DROP"
+                        return "LIFT" if r['Sales'] >= r['Baseline'] else "DROP"
+                    if pd.isna(r['ChangePct']): return "NORMAL"
+                    if r['ChangePct'] >= pct_thr_up: return "LIFT"
+                    if r['ChangePct'] <= -pct_thr_down: return "DROP"
+                    return "NORMAL"
+
+                merged['Signal'] = merged.apply(classify_row, axis=1)
+                merged['Qualitative Note'] = merged.apply(lambda r:
+                    f"User insight: {r['Matched Insight']}" if r['Matched Insight'] else (
+                        f"Sales +{r['ChangePct']:.0f}% vs baseline" if r['Signal']=="LIFT"
+                        else f"Sales -{abs(r['ChangePct']):.0f}% vs baseline" if r['Signal']=="DROP" else "Normal"
+                    ), axis=1)
+
+                lifts = (merged['Signal']=="LIFT").sum()
+                drops = (merged['Signal']=="DROP").sum()
+                with_insight = (merged['Matched Insight'] != "").sum()
+
+                c1,c2,c3 = st.columns(3)
+                c1.metric("Lift days", lifts)
+                c2.metric("Drop days", drops)
+                c3.metric("With insights", with_insight)
+
+                def style_sig(v):
+                    if v == "LIFT": return "background-color: #d4f7d4"
+                    if v == "DROP": return "background-color: #ffd6d6"
+                    return ""
+                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct
