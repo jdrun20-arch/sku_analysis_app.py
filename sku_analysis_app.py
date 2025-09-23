@@ -142,29 +142,32 @@ if module == "SKU Performance & Shelf Space":
             total_space_used = df_filtered['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            # --- Allocate shelf space ---
+            # --- Allocate shelf space (fixed overflow logic) ---
             if not df_filtered.empty:
                 df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
                 df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
                 df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
-                df_alloc['Fits Shelf'] = False
+                df_alloc['Fits Shelf'] = True
+
                 remaining_space = total_shelf_space
                 for i, row in df_alloc.iterrows():
                     space_needed = row['Space Needed Adjusted']
                     if space_needed <= remaining_space:
                         remaining_space -= space_needed
-                        df_alloc.at[i,'Fits Shelf'] = True
                     else:
-                        max_facings = max(1,int(remaining_space/row['Width']))
-                        if max_facings>0:
+                        # cannot fit full suggested facings
+                        max_facings = int(remaining_space / row['Width'])
+                        if max_facings > 0:
                             df_alloc.at[i,'Adjusted Facings'] = max_facings
-                            df_alloc.at[i,'Space Needed Adjusted'] = max_facings*row['Width']
-                            df_alloc.at[i,'Fits Shelf'] = True
+                            df_alloc.at[i,'Space Needed Adjusted'] = max_facings * row['Width']
                             remaining_space -= df_alloc.at[i,'Space Needed Adjusted']
+                            df_alloc.at[i,'Fits Shelf'] = False
                         else:
+                            # cannot fit at all
                             df_alloc.at[i,'Adjusted Facings'] = 0
                             df_alloc.at[i,'Space Needed Adjusted'] = 0
                             df_alloc.at[i,'Fits Shelf'] = False
+
                 skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
                 skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
             else:
@@ -207,6 +210,7 @@ if module == "SKU Performance & Shelf Space":
             st.subheader("Shelf usage")
             st.progress(min(space_pct/100,1.0))
             st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
+
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
     st.header("📈 Sales Analysis & Insight Matching")
@@ -330,4 +334,3 @@ elif module == "Approve Insights":
                 insights_df.loc[i, 'Status'] = "Rejected"
                 write_insights_df(insights_df)
                 safe_rerun()
-
