@@ -207,3 +207,127 @@ if module == "SKU Performance & Shelf Space":
             st.subheader("Shelf usage")
             st.progress(min(space_pct/100,1.0))
             st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
+# ================= MODULE 2 =================
+elif module == "Sales Analysis":
+    st.header("📈 Sales Analysis & Insight Matching")
+    sales_file = st.file_uploader("Upload Sales CSV", type=["csv"])
+    if sales_file is None:
+        st.info("Upload a sales CSV.")
+    else:
+        sales_raw = pd.read_csv(sales_file)
+        sales = normalize_colnames(sales_raw)
+        if 'Date' not in sales.columns or 'Sales' not in sales.columns:
+            st.error("Missing Date or Sales columns.")
+        else:
+            sales['Date'] = pd.to_datetime(sales['Date'], errors='coerce')
+            sales = sales.dropna(subset=['Date']).copy()
+            sales['Sales'] = clean_sales_series(sales['Sales'])
+            if 'Store Code' not in sales.columns:
+                sales['Store Code'] = "ALL"
+
+            store_list = sales['Store Code'].unique().tolist()
+            selected = st.multiselect("Select store(s)", store_list, default=store_list)
+            min_date, max_date = sales['Date'].min().date(), sales['Date'].max().date()
+            dr = st.date_input("Date range", [min_date, max_date])
+            start_d, end_d = pd.to_datetime(dr[0]), pd.to_datetime(dr[1])
+
+            sel = sales[(sales['Store Code'].isin(selected)) & (sales['Date'].between(start_d, end_d))].copy()
+            if sel.empty:
+                st.info("No data for selection.")
+            else:
+                sel['Baseline'] = np.nan
+                for store, group in sel.groupby('Store Code'):
+                    idxs = group.index.tolist()
+                    if len(group) == 1:
+                        sel.loc[idxs, 'Baseline'] = np.nan
+                    else:
+                        for i in idxs:
+                            sel.loc[i, 'Baseline'] = group.loc[group.index != i, 'Sales'].mean()
+                sel['ChangePct'] = (sel['Sales'] - sel['Baseline']) / sel['Baseline'] * 100
+
+                pct_thr_up = st.sidebar.slider("Lift threshold (%)", 10, 500, 50, 5)
+                pct_thr_down = st.sidebar.slider("Drop threshold (%)", 5, 200, 30, 5)
+
+                insights_df = ensure_insights_df()
+                insights_approved = insights_df[insights_df['Status'].str.lower() == 'approved'].copy()
+                sel['Date_key'] = sel['Date'].dt.strftime("%Y-%m-%d")
+                merged = pd.merge(sel, insights_approved, how='left', left_on=['Store Code','Date_key'], right_on=['Store Code','Date'])
+                merged['Matched Insight'] = merged['Insight'].fillna("")
+
+                def classify_row(r):
+                    if r['Matched Insight']:
+                        if pd.isna(r['Baseline']):
+                            store_mean = sales[sales['Store Code']==r['Store Code']]['Sales'].mean()
+                            return "LIFT" if r['Sales'] >= store_mean else "DROP"
+                        return "LIFT" if r['Sales'] >= r['Baseline'] else "DROP"
+                    if pd.isna(r['ChangePct']): return "NORMAL"
+                    if r['ChangePct'] >= pct_thr_up: return "LIFT"
+                    if r['ChangePct'] <= -pct_thr_down: return "DROP"
+                    return "NORMAL"
+
+                merged['Signal'] = merged.apply(classify_row, axis=1)
+                merged['Qualitative Note'] = merged.apply(lambda r:
+                    f"User insight: {r['Matched Insight']}" if r['Matched Insight'] else (
+                        f"Sales +{r['ChangePct']:.0f}% vs baseline" if r['Signal']=="LIFT"
+                        else f"Sales -{abs(r['ChangePct']):.0f}% vs baseline" if r['Signal']=="DROP" else "Normal"
+                    ), axis=1)
+
+                lifts = (merged['Signal']=="LIFT").sum()
+                drops = (merged['Signal']=="DROP").sum()
+                with_insight = (merged['Matched Insight'] != "").sum()
+
+                c1,c2,c3 = st.columns(3)
+                c1.metric("Lift days", lifts)
+                c2.metric("Drop days", drops)
+                c3.metric("With insights", with_insight)
+
+                def style_sig(v):
+                    if v == "LIFT": return "background-color: #d4f7d4"
+                    if v == "DROP": return "background-color: #ffd6d6"
+                    return ""
+                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note']].style
+                             .applymap(style_sig, subset=['Signal'])
+                             .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note']),
+                             use_container_width=True)
+
+# ================= MODULE 3 =================
+elif module == "Submit Insight":
+    st.header("📝 Submit an Insight")
+    insights_df = ensure_insights_df()
+    with st.form("insight_form", clear_on_submit=True):
+        date = st.date_input("Date", datetime.today())
+        store_code = st.text_input("Store Code")
+        insight = st.text_area("Insight")
+        submitted = st.form_submit_button("Submit Insight")
+        if submitted:
+            new_row = pd.DataFrame([{
+                "Date": date.strftime("%Y-%m-%d"),
+                "Store Code": store_code,
+                "Insight": insight,
+                "Status": "Pending"
+            }])
+            insights_df = pd.concat([insights_df, new_row], ignore_index=True)
+            write_insights_df(insights_df)
+            st.success("Insight submitted!")
+            safe_rerun()
+
+# ================= MODULE 4 =================
+elif module == "Approve Insights":
+    st.header("✅ Approve or Reject Insights")
+    insights_df = ensure_insights_df()
+    pending = insights_df[insights_df['Status'].str.lower()=="pending"]
+    if pending.empty:
+        st.info("No pending insights.")
+    else:
+        for i, row in pending.iterrows():
+            st.write(f"📅 {row['Date']} | 🏪 {row['Store Code']} | 📝 {row['Insight']}")
+            col1,col2 = st.columns(2)
+            if col1.button(f"Approve {i}"):
+                insights_df.loc[i, 'Status'] = "Approved"
+                write_insights_df(insights_df)
+                safe_rerun()
+            if col2.button(f"Reject {i}"):
+                insights_df.loc[i, 'Status'] = "Rejected"
+                write_insights_df(insights_df)
+                safe_rerun()
+
