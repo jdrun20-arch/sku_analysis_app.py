@@ -1,152 +1,3 @@
-# ========== MODULE 1: SKU Performance & Shelf Space ==========
-if module == "SKU Performance & Shelf Space":
-    st.header("📊 SKU Performance & Shelf Space")
-    sku_file = st.file_uploader(
-        "Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"]
-    )
-    if sku_file is None:
-        st.info("Upload a SKU CSV to run the SKU module.")
-    else:
-        sku_raw = pd.read_csv(sku_file)
-        sku = normalize_colnames(sku_raw)
-
-        required = ["SKU", "Sales", "Volume", "Margin"]
-        missing = [c for c in required if c not in sku.columns]
-        if missing:
-            st.error(f"Missing required columns: {missing}")
-        else:
-            # Clean numeric columns
-            sku['Sales'] = clean_sales_series(sku['Sales'])
-            sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
-            sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
-
-            # Normalize scores
-            def norm(series):
-                mx = series.replace(0, pd.NA).max()
-                if pd.isna(mx) or mx == 0:
-                    return pd.Series(0, index=series.index)
-                return series / mx
-
-            sku['Sales_Norm'] = norm(sku['Sales'])
-            sku['Volume_Norm'] = norm(sku['Volume'])
-            sku['Margin_Norm'] = norm(sku['Margin'])
-            sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
-            sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
-
-            # Recommendation
-            cutoff_expand = sku['Score'].quantile(0.70)
-            cutoff_delist = sku['Score'].quantile(0.30)
-            sku['Recommendation'] = sku['Score'].apply(
-                lambda s: "Expand" if s >= cutoff_expand else ("Delist" if s <= cutoff_delist else "Retain")
-            )
-            sku['Justification'] = sku['Recommendation'].map({
-                'Expand': "High performance — consider expansion.",
-                'Delist': "Low performance — candidate for phase-out.",
-                'Retain': "Balanced — maintain."
-            })
-
-            # Sidebar settings
-            st.sidebar.header("Shelf settings")
-            expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
-            retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
-            delist_facings = st.sidebar.slider("Facings for Delist", 0, 5, 1)
-            min_facings = st.sidebar.number_input("Minimum facings", 1, 10, 2)
-            shelf_width = st.sidebar.number_input("Shelf width per layer", 1.0, 10000.0, 100.0)
-            num_layers = st.sidebar.number_input("Number of layers", 1, 10, 1)
-            hide_delist = st.sidebar.checkbox("Hide Delist SKUs", value=False)
-            top_n = st.sidebar.slider(
-                "Top SKUs in chart", 5, min(100, max(5, len(sku))), min(50, max(5, len(sku)))
-            )
-
-            total_shelf_space = shelf_width * num_layers
-
-            def base_fac(rec):
-                if rec == "Expand": return max(expand_facings, min_facings)
-                if rec == "Retain": return max(retain_facings, min_facings)
-                return delist_facings
-
-            sku['Base Facings'] = sku['Recommendation'].apply(base_fac)
-
-            # Width handling
-            if 'Width' not in sku.columns:
-                sku['Width'] = st.sidebar.number_input("Default SKU width", 0.1, 100.0, 5.0)
-            else:
-                sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(
-                    st.sidebar.number_input("Default SKU width (fallback)", 0.1, 100.0, 5.0)
-                )
-
-            sku['Suggested Facings'] = sku['Base Facings']
-            sku['Space Needed'] = sku['Width'] * sku['Suggested Facings']
-
-            # Filter SKUs to show
-            df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
-            total_space_used = df_filtered['Space Needed'].sum()
-            space_pct = (total_space_used / total_shelf_space) * 100 if total_shelf_space > 0 else 0.0
-
-            # ---------- Allocate shelf space ----------
-            if not df_filtered.empty:
-                df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
-                df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
-                df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
-                df_alloc['Fits Shelf'] = False  # initialize
-
-                remaining_space = total_shelf_space
-                for i, row in df_alloc.iterrows():
-                    space_needed = row['Space Needed Adjusted']
-                    if space_needed <= remaining_space:
-                        remaining_space -= space_needed
-                        df_alloc.at[i, 'Fits Shelf'] = True
-                    else:
-                        max_facings = max(1, int(remaining_space / row['Width']))
-                        if max_facings > 0:
-                            df_alloc.at[i, 'Adjusted Facings'] = max_facings
-                            df_alloc.at[i, 'Space Needed Adjusted'] = max_facings * row['Width']
-                            df_alloc.at[i, 'Fits Shelf'] = True
-                            remaining_space -= df_alloc.at[i, 'Space Needed Adjusted']
-                        else:
-                            df_alloc.at[i, 'Adjusted Facings'] = 0
-                            df_alloc.at[i, 'Space Needed Adjusted'] = 0
-                            df_alloc.at[i, 'Fits Shelf'] = False
-
-                skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
-                skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
-            else:
-                df_alloc = pd.DataFrame(columns=df_filtered.columns.tolist() + ['Adjusted Facings', 'Space Needed Adjusted', 'Fits Shelf'])
-                skus_that_fit = df_alloc.copy()
-                skus_overflow = df_alloc.copy()
-
-            # ---------- Sidebar summary ----------
-            st.sidebar.subheader("Shelf Allocation Summary")
-            st.sidebar.metric("SKUs that fit", len(skus_that_fit))
-            st.sidebar.metric("SKUs that cannot fit", len(skus_overflow))
-            st.sidebar.metric("Suggested Delist Count", len(skus_overflow))
-
-            # ---------- Display ----------
-            st.subheader("SKU Recommendations")
-            def highlight_rec(v):
-                if v == "Expand": return "background-color:#d4f7d4"
-                if v == "Retain": return "background-color:#fff4cc"
-                if v == "Delist": return "background-color:#ffd6d6"
-                return ""
-
-            st.dataframe(
-                sku[['SKU', 'Score', 'Rank', 'Recommendation', 'Justification', 'Suggested Facings', 'Space Needed']]
-                .style.applymap(highlight_rec, subset=['Recommendation']),
-                use_container_width=True
-            )
-
-            st.subheader("SKUs that cannot fit in shelf")
-            if not skus_overflow.empty:
-                st.dataframe(
-                    skus_overflow[['SKU', 'Score', 'Recommendation', 'Adjusted Facings', 'Space Needed Adjusted']],
-                    use_container_width=True
-                )
-
-            st.subheader("Top SKUs by Adjusted Space Needed")
-            df_chart = skus_that_fit.sort_values('Space Needed Adjusted', ascending=False).head(top_n)
-            fig = px.bar(df_chart, x='Space Needed Adjusted', y='SKU', orientation='h', color='Recommendation')
-            fig.update_layout(height=30*len(df_chart))
-            st.plotly_chart(fig, use_container_width=True)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -207,7 +58,7 @@ def normalize_colnames(df: pd.DataFrame) -> pd.DataFrame:
         if cand in lowermap: mapping[lowermap[cand]] = 'Width'; break
     return df.rename(columns=mapping)
 
-# ---------- Sidebar Module Selection ----------
+# ---------- UI ----------
 st.sidebar.title("Modules")
 module = st.sidebar.radio("Choose module:", [
     "SKU Performance & Shelf Space",
@@ -216,7 +67,7 @@ module = st.sidebar.radio("Choose module:", [
     "Approve Insights"
 ])
 
-# ========== MODULE 1: SKU Performance & Shelf Space ==========
+# ========== MODULE 1 ==========
 if module == "SKU Performance & Shelf Space":
     st.header("📊 SKU Performance & Shelf Space")
     sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"])
@@ -240,6 +91,7 @@ if module == "SKU Performance & Shelf Space":
                 if pd.isna(mx) or mx == 0:
                     return pd.Series(0, index=series.index)
                 return series / mx
+
             sku['Sales_Norm'] = norm(sku['Sales'])
             sku['Volume_Norm'] = norm(sku['Volume'])
             sku['Margin_Norm'] = norm(sku['Margin'])
@@ -248,9 +100,7 @@ if module == "SKU Performance & Shelf Space":
 
             cutoff_expand = sku['Score'].quantile(0.70)
             cutoff_delist = sku['Score'].quantile(0.30)
-            sku['Recommendation'] = sku['Score'].apply(
-                lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain")
-            )
+            sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
             sku['Justification'] = sku['Recommendation'].map({
                 'Expand': "High performance — consider expansion.",
                 'Delist': "Low performance — candidate for phase-out.",
@@ -265,13 +115,13 @@ if module == "SKU Performance & Shelf Space":
             shelf_width = st.sidebar.number_input("Shelf width per layer", 1.0, 10000.0, 100.0)
             num_layers = st.sidebar.number_input("Number of layers", 1, 10, 1)
             hide_delist = st.sidebar.checkbox("Hide Delist SKUs", value=False)
-            top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5, len(sku))), min(50, max(5, len(sku))))
+            top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5,len(sku))), min(50,max(5,len(sku))))
 
             total_shelf_space = shelf_width * num_layers
 
             def base_fac(rec):
-                if rec == "Expand": return max(expand_facings, min_facings)
-                if rec == "Retain": return max(retain_facings, min_facings)
+                if rec=="Expand": return max(expand_facings, min_facings)
+                if rec=="Retain": return max(retain_facings, min_facings)
                 return delist_facings
             sku['Base Facings'] = sku['Recommendation'].apply(base_fac)
 
@@ -287,186 +137,37 @@ if module == "SKU Performance & Shelf Space":
 
             df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
             total_space_used = df_filtered['Space Needed'].sum()
-            space_pct = (total_space_used / total_shelf_space) * 100 if total_shelf_space > 0 else 0.0
+            space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            st.subheader("SKU Recommendations")
-            def highlight_rec(v):
-                if v=="Expand": return "background-color:#d4f7d4"
-                if v=="Retain": return "background-color:#fff4cc"
-                if v=="Delist": return "background-color:#ffd6d6"
-                return ""
-            st.dataframe(
-                sku[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Space Needed']].style
-                .applymap(highlight_rec, subset=['Recommendation']),
-                use_container_width=True
-            )
-
-            st.subheader("Shelf usage")
-            st.progress(min(space_pct/100, 1.0))
-            st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
-
-            # Allocation & auto-adjusted facings
-            df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
-            df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
-            df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
-
-            remaining_space = total_shelf_space
-            for i, row in df_alloc.iterrows():
-                space_needed = row['Space Needed Adjusted']
-                if space_needed <= remaining_space:
-                    remaining_space -= space_needed
-                    df_alloc.at[i, 'Fits Shelf'] = True
-                else:
-                    max_facings = max(1, int(remaining_space / row['Width']))
-                    if max_facings > 0:
-                        df_alloc.at[i, 'Adjusted Facings'] = max_facings
-                        df_alloc.at[i, 'Space Needed Adjusted'] = max_facings * row['Width']
-                        df_alloc.at[i, 'Fits Shelf'] = True
-                        remaining_space -= df_alloc.at[i, 'Space Needed Adjusted']
+            # ---------- Allocate shelf space ----------
+            if not df_filtered.empty:
+                df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
+                df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
+                df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
+                df_alloc['Fits Shelf'] = False
+                remaining_space = total_shelf_space
+                for i, row in df_alloc.iterrows():
+                    space_needed = row['Space Needed Adjusted']
+                    if space_needed <= remaining_space:
+                        remaining_space -= space_needed
+                        df_alloc.at[i,'Fits Shelf'] = True
                     else:
-                        df_alloc.at[i, 'Fits Shelf'] = False
-                        df_alloc.at[i, 'Adjusted Facings'] = 0
-                        df_alloc.at[i, 'Space Needed Adjusted'] = 0
-
-            skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
-            skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
-
-            st.write(f"✅ SKUs that fit: {len(skus_that_fit)} / {len(df_alloc)}")
-            st.write(f"❌ SKUs that cannot fit: {len(skus_overflow)} (consider delisting)")
-
-            if not skus_overflow.empty:
-                st.subheader("SKUs that cannot fit in shelf")
-                st.dataframe(
-                    skus_overflow[['SKU','Score','Recommendation','Adjusted Facings','Space Needed Adjusted']],
-                    use_container_width=True
-                )
-
-            st.subheader("Top SKUs by Adjusted Space Needed")
-            df_chart = skus_that_fit.sort_values('Space Needed Adjusted', ascending=False).head(top_n)
-            fig = px.bar(df_chart, x='Space Needed Adjusted', y='SKU', orientation='h', color='Recommendation')
-            fig.update_layout(height=30*len(df_chart))
-            st.plotly_chart(fig, use_container_width=True)
-
-# ========== MODULE 2: Sales Analysis ==========
-elif module == "Sales Analysis":
-    st.header("📈 Sales Analysis & Insight Matching")
-    sales_file = st.file_uploader("Upload Sales CSV", type=["csv"])
-    if sales_file is None:
-        st.info("Upload a sales CSV.")
-    else:
-        sales_raw = pd.read_csv(sales_file)
-        sales = normalize_colnames(sales_raw)
-        if 'Date' not in sales.columns or 'Sales' not in sales.columns:
-            st.error("Missing Date or Sales columns.")
-        else:
-            sales['Date'] = pd.to_datetime(sales['Date'], errors='coerce')
-            sales = sales.dropna(subset=['Date']).copy()
-            sales['Sales'] = clean_sales_series(sales['Sales'])
-            if 'Store Code' not in sales.columns:
-                sales['Store Code'] = "ALL"
-
-            store_list = sales['Store Code'].unique().tolist()
-            selected = st.multiselect("Select store(s)", store_list, default=store_list)
-            min_date, max_date = sales['Date'].min().date(), sales['Date'].max().date()
-            dr = st.date_input("Date range", [min_date, max_date])
-            start_d, end_d = pd.to_datetime(dr[0]), pd.to_datetime(dr[1])
-
-            sel = sales[(sales['Store Code'].isin(selected)) & (sales['Date'].between(start_d, end_d))].copy()
-            if sel.empty:
-                st.info("No data for selection.")
+                        max_facings = max(1,int(remaining_space/row['Width']))
+                        if max_facings>0:
+                            df_alloc.at[i,'Adjusted Facings'] = max_facings
+                            df_alloc.at[i,'Space Needed Adjusted'] = max_facings*row['Width']
+                            df_alloc.at[i,'Fits Shelf'] = True
+                            remaining_space -= df_alloc.at[i,'Space Needed Adjusted']
+                        else:
+                            df_alloc.at[i,'Adjusted Facings'] = 0
+                            df_alloc.at[i,'Space Needed Adjusted'] = 0
+                            df_alloc.at[i,'Fits Shelf'] = False
+                skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
+                skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
             else:
-                sel['Baseline'] = np.nan
-                for store, group in sel.groupby('Store Code'):
-                    idxs = group.index.tolist()
-                    if len(group) == 1:
-                        sel.loc[idxs, 'Baseline'] = np.nan
-                    else:
-                        for i in idxs:
-                            sel.loc[i, 'Baseline'] = group.loc[group.index != i, 'Sales'].mean()
-                sel['ChangePct'] = (sel['Sales'] - sel['Baseline']) / sel['Baseline'] * 100
+                df_alloc = pd.DataFrame(columns=df_filtered.columns.tolist()+['Adjusted Facings','Space Needed Adjusted','Fits Shelf'])
+                skus_that_fit = df_alloc.copy()
+                skus_overflow = df_alloc.copy()
 
-                pct_thr_up = st.sidebar.slider("Lift threshold (%)", 10, 500, 50, 5)
-                pct_thr_down = st.sidebar.slider("Drop threshold (%)", 5, 200, 30, 5)
-
-                insights_df = ensure_insights_df()
-                insights_approved = insights_df[insights_df['Status'].str.lower() == 'approved'].copy()
-                sel['Date_key'] = sel['Date'].dt.strftime("%Y-%m-%d")
-                merged = pd.merge(sel, insights_approved, how='left', left_on=['Store Code','Date_key'], right_on=['Store Code','Date'])
-                merged['Matched Insight'] = merged['Insight'].fillna("")
-
-                def classify_row(r):
-                    if r['Matched Insight']:
-                        if pd.isna(r['Baseline']):
-                            store_mean = sales[sales['Store Code']==r['Store Code']]['Sales'].mean()
-                            return "LIFT" if r['Sales'] >= store_mean else "DROP"
-                        return "LIFT" if r['Sales'] >= r['Baseline'] else "DROP"
-                    if pd.isna(r['ChangePct']): return "NORMAL"
-                    if r['ChangePct'] >= pct_thr_up: return "LIFT"
-                    if r['ChangePct'] <= -pct_thr_down: return "DROP"
-                    return "NORMAL"
-
-                merged['Signal'] = merged.apply(classify_row, axis=1)
-                merged['Qualitative Note'] = merged.apply(lambda r:
-                    f"User insight: {r['Matched Insight']}" if r['Matched Insight'] else (
-                        f"Sales +{r['ChangePct']:.0f}% vs baseline" if r['Signal']=="LIFT"
-                        else f"Sales -{abs(r['ChangePct']):.0f}% vs baseline" if r['Signal']=="DROP" else "Normal"
-                    ), axis=1)
-
-                lifts = (merged['Signal']=="LIFT").sum()
-                drops = (merged['Signal']=="DROP").sum()
-                with_insight = (merged['Matched Insight'] != "").sum()
-
-                c1,c2,c3 = st.columns(3)
-                c1.metric("Lift days", lifts)
-                c2.metric("Drop days", drops)
-                c3.metric("With insights", with_insight)
-
-                def style_sig(v):
-                    if v == "LIFT": return "background-color: #d4f7d4"
-                    if v == "DROP": return "background-color: #ffd6d6"
-                    return ""
-                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note']].style
-                             .applymap(style_sig, subset=['Signal'])
-                             .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note']),
-                             use_container_width=True)
-
-# ========== MODULE 3: Submit Insight ==========
-elif module == "Submit Insight":
-    st.header("📝 Submit an Insight")
-    insights_df = ensure_insights_df()
-    with st.form("insight_form", clear_on_submit=True):
-        date = st.date_input("Date", datetime.today())
-        store_code = st.text_input("Store Code")
-        insight = st.text_area("Insight")
-        submitted = st.form_submit_button("Submit Insight")
-        if submitted:
-            new_row = pd.DataFrame([{
-                "Date": date.strftime("%Y-%m-%d"),
-                "Store Code": store_code,
-                "Insight": insight,
-                "Status": "Pending"
-            }])
-            insights_df = pd.concat([insights_df, new_row], ignore_index=True)
-            write_insights_df(insights_df)
-            st.success("Insight submitted!")
-            safe_rerun()
-
-# ========== MODULE 4: Approve Insights ==========
-elif module == "Approve Insights":
-    st.header("✅ Approve or Reject Insights")
-    insights_df = ensure_insights_df()
-    pending = insights_df[insights_df['Status'].str.lower()=="pending"]
-    if pending.empty:
-        st.info("No pending insights.")
-    else:
-        for i, row in pending.iterrows():
-            st.write(f"📅 {row['Date']} | 🏪 {row['Store Code']} | 📝 {row['Insight']}")
-            col1,col2 = st.columns(2)
-            if col1.button(f"Approve {i}"):
-                insights_df.loc[i, 'Status'] = "Approved"
-                write_insights_df(insights_df)
-                safe_rerun()
-            if col2.button(f"Reject {i}"):
-                insights_df.loc[i, 'Status'] = "Rejected"
-                write_insights_df(insights_df)
-                safe_rerun()
+            # ---------- Sidebar summary ----------
+            st.sidebar.subheader("Shelf Allocation Summary")
