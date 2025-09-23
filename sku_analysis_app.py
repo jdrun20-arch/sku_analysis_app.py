@@ -96,151 +96,95 @@ module = st.sidebar.radio("Choose module:", [
     "Approve Insights"
 ])
 
-# ========== MODULE 1 ==========
-if module == "SKU Performance & Shelf Space":
-    st.header("📊 SKU Performance & Shelf Space")
-    sku_file = st.file_uploader(
-        "Upload SKU CSV (required: SKU, Store Code, Sales, Volume, Margin, Width, Facings, Product Type, Variant, Item Size)", 
-        type=["csv"]
+import streamlit as st
+import pandas as pd
+import numpy as np
+import io
+
+st.title("SKU Performance & Shelf Space Optimizer")
+
+uploaded_file = st.file_uploader("Upload your SKU CSV file", type=["csv"])
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+
+    # --- Clean Column Names ---
+    df.columns = df.columns.str.strip()
+
+    # --- Calculate Metrics ---
+    total_shelf_space = df['Width'].sum() * 1.2  # add 20% buffer
+
+    # Compute Contribution %
+    df['Sales_Contribution'] = df['Sales'] / df['Sales'].sum()
+    df['Volume_Contribution'] = df['Volume'] / df['Volume'].sum()
+    df['Margin_Contribution'] = df['Margins'] / df['Margins'].sum()
+
+    df['Weighted_Contribution'] = (
+        df['Sales_Contribution'] * 0.3 +
+        df['Volume_Contribution'] * 0.3 +
+        df['Margin_Contribution'] * 0.4
     )
 
-    if sku_file is None:
-        st.info("Upload a SKU CSV to run the SKU module.")
-    else:
-        sku_raw = pd.read_csv(sku_file)
-        sku = normalize_colnames(sku_raw)
-
-        required = ["SKU","Store Code","Sales","Volume","Margin","Width","Facings","Product Type","Variant","Item Size"]
-        missing = [c for c in required if c not in sku.columns]
-        if missing:
-            st.error(f"Missing required columns: {missing}")
+    # Recommendation Logic
+    def recommend(row):
+        if row['Sales_Contribution'] > 0.05 and row['Margin_Contribution'] > 0.05:
+            return "Expand"
+        elif row['Sales_Contribution'] < 0.01 and row['Margin_Contribution'] < 0.01:
+            return "Delist"
         else:
-            # --- CLEANING & SCORING ---
-            sku['Sales'] = clean_sales_series(sku['Sales'])
-            sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
-            sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
-            sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(1)
-            sku['Facings'] = pd.to_numeric(sku['Facings'], errors='coerce').fillna(1)
+            return "Retain"
 
-            def norm(series):
-                mx = series.replace(0, pd.NA).max()
-                if pd.isna(mx) or mx == 0:
-                    return pd.Series(0, index=series.index)
-                return series / mx
+    df['Recommendation'] = df.apply(recommend, axis=1)
 
-            sku['Sales_Norm'] = norm(sku['Sales'])
-            sku['Volume_Norm'] = norm(sku['Volume'])
-            sku['Margin_Norm'] = norm(sku['Margin'])
-            sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
-            sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
+    # --- Contribution-Based Facings ---
+    total_shelf_facings = int(total_shelf_space / df['Width'].mean())
+    df['Suggested Facings'] = (df['Weighted_Contribution'] * total_shelf_facings).round()
 
-            cutoff_expand = sku['Score'].quantile(0.70)
-            cutoff_delist = sku['Score'].quantile(0.30)
-            sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
-            sku['Justification'] = sku['Recommendation'].map({
-                'Expand': "High performance — consider expansion.",
-                'Delist': "Low performance — candidate for phase-out.",
-                'Retain': "Balanced — maintain."
-            })
+    expand_facings = 3
+    retain_facings = 2
+    delist_facings = 0
 
-            # --- SHELF SETTINGS ---
-            st.sidebar.header("Shelf settings")
-            expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
-            retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
-            delist_facings = st.sidebar.slider("Facings for Delist", 0, 5, 1)
-            min_facings = st.sidebar.number_input("Minimum facings", 1, 10, 2)
-            shelf_width = st.sidebar.number_input("Shelf width per layer", 1.0, 10000.0, 100.0)
-            num_layers = st.sidebar.number_input("Number of layers", 1, 10, 1)
-            hide_delist = st.sidebar.checkbox("Hide Delist SKUs", value=False)
+    df.loc[df['Recommendation'] == "Expand", 'Suggested Facings'] = df['Suggested Facings'].clip(lower=expand_facings)
+    df.loc[df['Recommendation'] == "Retain", 'Suggested Facings'] = df['Suggested Facings'].clip(lower=retain_facings)
+    df.loc[df['Recommendation'] == "Delist", 'Suggested Facings'] = delist_facings
 
-            total_shelf_space = shelf_width * num_layers
+    df['Space Needed'] = df['Width'] * df['Suggested Facings']
 
-            def base_fac(rec):
-                if rec == "Expand": return max(expand_facings, min_facings)
-                if rec == "Retain": return max(retain_facings, min_facings)
-                return delist_facings
+    # --- Shelf Fit Check ---
+    total_space_needed = df['Space Needed'].sum()
+    df['Fits Shelf'] = total_space_needed <= total_shelf_space
 
-            sku['Base Facings'] = sku['Recommendation'].apply(base_fac)
-            sku['Suggested Facings'] = sku['Base Facings']
-            sku['Space Needed'] = sku['Width'] * sku['Suggested Facings']
+    st.subheader("Shelf Usage & SKUs That Cannot Fit")
+    col1, col2 = st.columns(2)
 
-            # --- FILTER BY PRODUCT TYPE ---
-            product_types = sku['Product Type'].dropna().unique().tolist()
-            selected_types = st.multiselect(
-                "Filter by Product Type:",
-                options=product_types,
-                default=product_types
-            )
+    with col1:
+        shelf_usage_pct = (total_space_needed / total_shelf_space) * 100
+        st.metric("Shelf Usage", f"{shelf_usage_pct:.1f}%")
 
-            df_filtered = sku[sku['Product Type'].isin(selected_types)].copy()
-            if hide_delist:
-                df_filtered = df_filtered[df_filtered['Recommendation'] != "Delist"]
+    with col2:
+        overflow_df = df[df['Fits Shelf'] == False]
+        if not overflow_df.empty:
+            st.dataframe(overflow_df[['SKU', 'Store Code', 'Recommendation', 'Suggested Facings', 'Space Needed']])
+        else:
+            st.success("✅ All SKUs fit within the available shelf space.")
 
-            total_space_used = df_filtered['Space Needed'].sum()
-            space_pct = (total_space_used / total_shelf_space) * 100 if total_shelf_space>0 else 0.0
+    # --- Summary by Product Type & Variant ---
+    st.subheader("SKU Summary by Product Type & Variant")
+    summary = df.groupby(['Product Type', 'Variant'])['SKU'].count().reset_index()
+    summary.rename(columns={'SKU': 'Count'}, inplace=True)
 
-            # --- LAYOUT FOR SHELF USAGE + OVERFLOW ---
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                st.subheader("Shelf Usage")
-                st.progress(min(space_pct/100,1.0))
-                st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
-            with c2:
-                st.subheader("SKUs that cannot fit in shelf")
-                df_sorted = df_filtered.sort_values('Score', ascending=False)
-                df_sorted['CumulativeSpace'] = df_sorted['Space Needed'].cumsum()
-                df_sorted['Fits Shelf'] = df_sorted['CumulativeSpace'] <= total_shelf_space
-                skus_overflow = df_sorted[~df_sorted['Fits Shelf']]
-                if skus_overflow.empty:
-                    st.success("✅ All SKUs fit within available shelf space!")
-                else:
-                    st.error(f"🚨 {len(skus_overflow)} SKUs exceed available space.")
-                    st.dataframe(skus_overflow[['SKU','Product Type','Variant','Space Needed']], use_container_width=True)
+    selected_product_types = st.multiselect("Filter by Product Type", options=summary['Product Type'].unique(), default=list(summary['Product Type'].unique()))
+    filtered_summary = summary[summary['Product Type'].isin(selected_product_types)]
 
-            # --- SKU RECOMMENDATION TABLE ---
-            st.subheader("SKU Recommendations")
-            def highlight_rec(v):
-                if v=="Expand": return "background-color:#d4f7d4"
-                if v=="Retain": return "background-color:#fff4cc"
-                if v=="Delist": return "background-color:#ffd6d6"
-                return ""
-            st.dataframe(df_filtered[['SKU','Product Type','Variant','Item Size','Score','Rank','Recommendation','Suggested Facings','Space Needed']].style
-                         .applymap(highlight_rec, subset=['Recommendation']),
-                         use_container_width=True)
+    st.bar_chart(filtered_summary.set_index(['Product Type', 'Variant']))
 
-            # --- SUMMARY BY PRODUCT TYPE & VARIANT ---
-            st.subheader("Summary by Product Type & Variant")
-            summary = (df_filtered.groupby(['Product Type','Variant','Recommendation'])
-                       .size().reset_index(name="Count"))
-
-            st.dataframe(summary, use_container_width=True)
-
-            summary['Category-Variant'] = summary['Product Type'] + " - " + summary['Variant']
-            fig_summary = px.bar(
-                summary.sort_values("Count", ascending=True),
-                x="Count",
-                y="Category-Variant",
-                color="Recommendation",
-                orientation="h",
-                text="Count",
-                category_orders={"Recommendation": ["Expand", "Retain", "Delist"]}
-            )
-            fig_summary.update_traces(textposition="outside")
-            fig_summary.update_layout(height=500, xaxis_title="Number of SKUs", bargap=0.3)
-            st.plotly_chart(fig_summary, use_container_width=True)
-
-            # --- DOWNLOADABLE EXCEL ---
-            from io import BytesIO
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df_filtered.to_excel(writer, index=False, sheet_name="SKU Recommendations")
-                summary.to_excel(writer, index=False, sheet_name="Summary")
-            st.download_button(
-                label="📥 Download SKU Recommendations (Excel)",
-                data=output.getvalue(),
-                file_name="sku_recommendations.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    # --- Downloadable Recommendations ---
+    st.subheader("Download SKU Recommendations")
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name="SKU Recommendations")
+    st.download_button(label="📥 Download Excel", data=output.getvalue(), file_name="sku_recommendations.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+else:
+    st.info("Please upload a CSV file with SKU, Store Code, Sales, Volume, Margins, Width, Facings, Product Type, Variant, Item Size.")
 
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
