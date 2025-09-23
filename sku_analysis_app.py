@@ -67,7 +67,7 @@ module = st.sidebar.radio("Choose module:", [
     "Approve Insights"
 ])
 
-# ========== MODULE 1 ==========
+# ================= MODULE 1 =================
 if module == "SKU Performance & Shelf Space":
     st.header("📊 SKU Performance & Shelf Space")
     sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"])
@@ -82,6 +82,7 @@ if module == "SKU Performance & Shelf Space":
         if missing:
             st.error(f"Missing required columns: {missing}")
         else:
+            # --- Prepare SKU data ---
             sku['Sales'] = clean_sales_series(sku['Sales'])
             sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
             sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
@@ -98,6 +99,7 @@ if module == "SKU Performance & Shelf Space":
             sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
             sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
 
+            # --- Recommendations ---
             cutoff_expand = sku['Score'].quantile(0.70)
             cutoff_delist = sku['Score'].quantile(0.30)
             sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
@@ -107,6 +109,7 @@ if module == "SKU Performance & Shelf Space":
                 'Retain': "Balanced — maintain."
             })
 
+            # --- Shelf settings ---
             st.sidebar.header("Shelf settings")
             expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
             retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
@@ -139,7 +142,7 @@ if module == "SKU Performance & Shelf Space":
             total_space_used = df_filtered['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            # ---------- Allocate shelf space ----------
+            # --- Allocate shelf space ---
             if not df_filtered.empty:
                 df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
                 df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
@@ -169,12 +172,12 @@ if module == "SKU Performance & Shelf Space":
                 skus_that_fit = df_alloc.copy()
                 skus_overflow = df_alloc.copy()
 
-            # ---------- Sidebar summary ----------
+            # --- Sidebar summary ---
             st.sidebar.metric("SKUs that fit", len(skus_that_fit))
             st.sidebar.metric("SKUs that cannot fit", len(skus_overflow))
             st.sidebar.metric("Suggested Delist Count", len(skus_overflow))
 
-            # ---------- Display ----------
+            # --- Display ---
             st.subheader("SKU Recommendations")
             def highlight_rec(v):
                 if v=="Expand": return "background-color:#d4f7d4"
@@ -204,54 +207,3 @@ if module == "SKU Performance & Shelf Space":
             st.subheader("Shelf usage")
             st.progress(min(space_pct/100,1.0))
             st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
-
-# ========== MODULE 2 ==========
-elif module == "Sales Analysis":
-    st.header("📈 Sales Analysis & Insight Matching")
-    sales_file = st.file_uploader("Upload Sales CSV", type=["csv"])
-    if sales_file is None:
-        st.info("Upload a sales CSV.")
-    else:
-        sales_raw = pd.read_csv(sales_file)
-        sales = normalize_colnames(sales_raw)
-        if 'Date' not in sales.columns or 'Sales' not in sales.columns:
-            st.error("Missing Date or Sales columns.")
-        else:
-            sales['Date'] = pd.to_datetime(sales['Date'], errors='coerce')
-            sales = sales.dropna(subset=['Date']).copy()
-            sales['Sales'] = clean_sales_series(sales['Sales'])
-            if 'Store Code' not in sales.columns:
-                sales['Store Code'] = "ALL"
-
-            store_list = sales['Store Code'].unique().tolist()
-            selected = st.multiselect("Select store(s)", store_list, default=store_list)
-            min_date, max_date = sales['Date'].min().date(), sales['Date'].max().date()
-            dr = st.date_input("Date range", [min_date, max_date])
-            start_d, end_d = pd.to_datetime(dr[0]), pd.to_datetime(dr[1])
-
-            sel = sales[(sales['Store Code'].isin(selected)) & (sales['Date'].between(start_d, end_d))].copy()
-            if sel.empty:
-                st.info("No data for selection.")
-            else:
-                sel['Baseline'] = np.nan
-                for store, group in sel.groupby('Store Code'):
-                    idxs = group.index.tolist()
-                    if len(group) == 1:
-                        sel.loc[idxs, 'Baseline'] = np.nan
-                    else:
-                        for i in idxs:
-                            sel.loc[i, 'Baseline'] = group.loc[group.index != i, 'Sales'].mean()
-                sel['ChangePct'] = (sel['Sales'] - sel['Baseline']) / sel['Baseline'] * 100
-
-                pct_thr_up = st.sidebar.slider("Lift threshold (%)", 10, 500, 50, 5)
-                pct_thr_down = st.sidebar.slider("Drop threshold (%)", 5, 200, 30, 5)
-
-                insights_df = ensure_insights_df()
-                insights_approved = insights_df[insights_df['Status'].str.lower() == 'approved'].copy()
-                sel['Date_key'] = sel['Date'].dt.strftime("%Y-%m-%d")
-                merged = pd.merge(sel, insights_approved, how='left', left_on=['Store Code','Date_key'], right_on=['Store Code','Date'])
-                merged['Matched Insight'] = merged['Insight'].fillna("")
-
-                def classify_row(r):
-                    if r['Matched Insight']:
-                        if pd.isna(r['
