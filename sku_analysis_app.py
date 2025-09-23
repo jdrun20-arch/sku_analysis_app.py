@@ -70,9 +70,9 @@ module = st.sidebar.radio("Choose module:", [
 # ================= MODULE 1 =================
 if module == "SKU Performance & Shelf Space":
     st.header("📊 SKU Performance & Shelf Space")
-    sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"])
+    sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin)", type=["csv"])
     if sku_file is None:
-        st.info("Upload a SKU CSV to run the SKU module.")
+        st.info("Upload a SKU CSV to run this module.")
     else:
         sku_raw = pd.read_csv(sku_file)
         sku = normalize_colnames(sku_raw)
@@ -86,11 +86,10 @@ if module == "SKU Performance & Shelf Space":
             sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
             sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
 
+            # --- Normalize and Score ---
             def norm(series):
                 mx = series.replace(0, pd.NA).max()
-                if pd.isna(mx) or mx == 0:
-                    return pd.Series(0, index=series.index)
-                return series / mx
+                return series / mx if mx and mx != 0 else 0
 
             sku['Sales_Norm'] = norm(sku['Sales'])
             sku['Volume_Norm'] = norm(sku['Volume'])
@@ -98,116 +97,54 @@ if module == "SKU Performance & Shelf Space":
             sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
             sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
 
-            cutoff_expand = sku['Score'].quantile(0.70)
-            cutoff_delist = sku['Score'].quantile(0.30)
-            sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
-            sku['Justification'] = sku['Recommendation'].map({
-                'Expand': "High performance — consider expansion.",
-                'Delist': "Low performance — candidate for phase-out.",
-                'Retain': "Balanced — maintain."
-            })
+            # --- Retain % Control ---
+            retain_pct = st.sidebar.slider("Target Retain %", 10, 100, 80, 5)
+            top_n_to_keep = int(len(sku) * retain_pct / 100)
+            sku_sorted = sku.sort_values("Score", ascending=False)
+            cutoff_score = sku_sorted.iloc[top_n_to_keep-1]['Score'] if len(sku_sorted)>=top_n_to_keep else 0
+            sku['Recommendation'] = sku['Score'].apply(lambda s: "Delist" if s < cutoff_score else "Retain")
+            # Top 20% of Retain are Expand
+            retain_only = sku[sku['Recommendation']=="Retain"]
+            expand_cutoff = retain_only['Score'].quantile(0.80) if not retain_only.empty else 1
+            sku.loc[(sku['Recommendation']=="Retain") & (sku['Score']>=expand_cutoff), 'Recommendation'] = "Expand"
 
-            st.sidebar.header("Shelf settings")
-            expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
-            retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
-            delist_facings = st.sidebar.slider("Facings for Delist", 0, 5, 1)
-            min_facings = st.sidebar.number_input("Minimum facings", 1, 10, 2)
+            # --- Facings Suggestion based on Score ---
+            min_facings = st.sidebar.number_input("Minimum facings per SKU", 1, 10, 1)
+            max_facings = st.sidebar.number_input("Maximum facings per SKU", 1, 20, 5)
+            sku['Suggested Facings'] = ((sku['Score']/sku['Score'].max())*(max_facings-min_facings)+min_facings).round(0).astype(int)
+
+            # --- Shelf Settings ---
             shelf_width = st.sidebar.number_input("Shelf width per layer", 1.0, 10000.0, 100.0)
             num_layers = st.sidebar.number_input("Number of layers", 1, 10, 1)
-            hide_delist = st.sidebar.checkbox("Hide Delist SKUs", value=False)
-            top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5,len(sku))), min(50,max(5,len(sku))))
-
             total_shelf_space = shelf_width * num_layers
-            def base_fac(rec):
-                if rec=="Expand": return max(expand_facings, min_facings)
-                if rec=="Retain": return max(retain_facings, min_facings)
-                return delist_facings
-            sku['Base Facings'] = sku['Recommendation'].apply(base_fac)
-
-            if 'Width' not in sku.columns:
-                sku['Width'] = st.sidebar.number_input("Default SKU width", 0.1, 100.0, 5.0)
-            else:
-                sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(
-                    st.sidebar.number_input("Default SKU width (fallback)", 0.1, 100.0, 5.0)
-                )
-
-            sku['Suggested Facings'] = sku['Base Facings']
+            sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(5.0)
             sku['Space Needed'] = sku['Width'] * sku['Suggested Facings']
 
-            df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
-            total_space_used = df_filtered['Space Needed'].sum()
+            total_space_used = sku['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            # Allocate shelf safely
-            if not df_filtered.empty:
-                df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
-                df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
-                df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
-                df_alloc['Fits Shelf'] = True
+            st.subheader("SKU Distribution by Product Type & Variant")
+            if "Product Type" in sku.columns and "Variant" in sku.columns:
+                chart_df = sku.groupby(["Product Type","Variant"])['Recommendation'].value_counts().unstack(fill_value=0).reset_index()
+                fig = px.bar(chart_df, x="Product Type", y=["Expand","Retain","Delist"],
+                             color_discrete_sequence=px.colors.qualitative.Set2,
+                             barmode="stack", title="SKU Recommendation Summary")
+                st.plotly_chart(fig, use_container_width=True)
 
-                remaining_space = total_shelf_space
-                for i, row in df_alloc.iterrows():
-                    space_needed = row['Space Needed Adjusted']
-                    if space_needed <= remaining_space:
-                        remaining_space -= space_needed
-                    else:
-                        max_facings = int(remaining_space / row['Width'])
-                        if max_facings > 0:
-                            df_alloc.at[i,'Adjusted Facings'] = max_facings
-                            df_alloc.at[i,'Space Needed Adjusted'] = max_facings * row['Width']
-                            remaining_space -= df_alloc.at[i,'Space Needed Adjusted']
-                            df_alloc.at[i,'Fits Shelf'] = False
-                        else:
-                            df_alloc.at[i,'Adjusted Facings'] = 0
-                            df_alloc.at[i,'Space Needed Adjusted'] = 0
-                            df_alloc.at[i,'Fits Shelf'] = False
+            st.subheader("Shelf Usage")
+            st.progress(min(space_pct/100, 1.0))
+            st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
 
-                skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
-                skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
-            else:
-                df_alloc = pd.DataFrame(columns=df_filtered.columns.tolist()+['Adjusted Facings','Space Needed Adjusted','Fits Shelf'])
-                skus_that_fit = df_alloc.copy()
-                skus_overflow = df_alloc.copy()
-
-            # Side-by-side display
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Shelf Usage")
-                st.progress(min(space_pct/100,1.0))
-                st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
-                if skus_overflow.empty:
-                    st.success("All SKUs fit on the shelf ✅")
-            with col2:
-                st.subheader("SKUs that cannot fit in shelf")
-                if skus_overflow.empty:
-                    st.info("No SKUs overflow — all fit on the shelf.")
-                else:
-                    st.dataframe(
-                        skus_overflow[['SKU','Score','Recommendation','Adjusted Facings','Space Needed Adjusted']],
-                        use_container_width=True
-                    )
-
-            # SKU Recommendations table with download
             st.subheader("SKU Recommendations")
             def highlight_rec(v):
-                if v=="Expand": return "background-color:#d4f7d4"
-                if v=="Retain": return "background-color:#fff4cc"
-                if v=="Delist": return "background-color:#ffd6d6"
-                return ""
+                return ("background-color:#d4f7d4" if v=="Expand"
+                        else "background-color:#fff4cc" if v=="Retain"
+                        else "background-color:#ffd6d6" if v=="Delist" else "")
             st.dataframe(
-                df_alloc[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Adjusted Facings','Space Needed Adjusted']]
+                sku[['SKU','Score','Rank','Recommendation','Suggested Facings','Space Needed']]
                 .style.applymap(highlight_rec, subset=['Recommendation']),
                 use_container_width=True
             )
-            excel_file = "SKU_Recommendations.xlsx"
-            df_alloc.to_excel(excel_file, index=False)
-            with open(excel_file, "rb") as f:
-                st.download_button(
-                    label="📥 Download SKU Recommendations",
-                    data=f,
-                    file_name=excel_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
 
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
@@ -258,41 +195,21 @@ elif module == "Sales Analysis":
 
                 def classify_row(r):
                     if r['Matched Insight']:
-                        if pd.isna(r['Baseline']):
-                            store_mean = sales[sales['Store Code']==r['Store Code']]['Sales'].mean()
-                            return "LIFT" if r['Sales'] >= store_mean else "DROP"
-                        return "LIFT" if r['Sales'] >= r['Baseline'] else "DROP"
+                        return "LIFT" if r['Sales'] >= (r['Baseline'] if not pd.isna(r['Baseline']) else r['Sales']) else "DROP"
                     if pd.isna(r['ChangePct']): return "NORMAL"
                     if r['ChangePct'] >= pct_thr_up: return "LIFT"
                     if r['ChangePct'] <= -pct_thr_down: return "DROP"
                     return "NORMAL"
 
                 merged['Signal'] = merged.apply(classify_row, axis=1)
-                merged['Qualitative Note'] = merged.apply(lambda r:
-                    f"User insight: {r['Matched Insight']}" if r['Matched Insight'] else (
-                        f"Sales +{r['ChangePct']:.0f}% vs baseline" if r['Signal']=="LIFT"
-                        else f"Sales -{abs(r['ChangePct']):.0f}% vs baseline" if r['Signal']=="DROP" else "Normal"
-                    ), axis=1)
-
-                lifts = (merged['Signal']=="LIFT").sum()
-                drops = (merged['Signal']=="DROP").sum()
-                with_insight = (merged['Matched Insight'] != "").sum()
 
                 c1,c2,c3 = st.columns(3)
-                c1.metric("Lift days", lifts)
-                c2.metric("Drop days", drops)
-                c3.metric("With insights", with_insight)
+                c1.metric("Lift days", (merged['Signal']=="LIFT").sum())
+                c2.metric("Drop days", (merged['Signal']=="DROP").sum())
+                c3.metric("With insights", (merged['Matched Insight'] != "").sum())
 
-                # Only display columns that exist
-                display_cols = [c for c in ['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note'] if c in merged.columns]
-                def style_sig(v):
-                    if v=="LIFT": return "background-color:#d4f7d4"
-                    if v=="DROP": return "background-color:#ffd6d6"
-                    return ""
                 st.dataframe(
-                    merged[display_cols].style
-                        .applymap(style_sig, subset=['Signal'] if 'Signal' in display_cols else None)
-                        .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note'] if 'Qualitative Note' in display_cols else None),
+                    merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Matched Insight']],
                     use_container_width=True
                 )
 
