@@ -67,28 +67,42 @@ module = st.sidebar.radio("Choose module:", [
     "Approve Insights"
 ])
 
-# ================= MODULE 1 =================
+# ========== MODULE 1: SKU PERFORMANCE & SHELF SPACE ==========
 if module == "SKU Performance & Shelf Space":
     st.header("📊 SKU Performance & Shelf Space")
-    sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"])
+    
+    sku_file = st.file_uploader(
+        "Upload SKU CSV (required: SKU, Sales, Volume, Margin, Width, Facings). Optional: Product Type, Variant, Item Size",
+        type=["csv"]
+    )
     if sku_file is None:
         st.info("Upload a SKU CSV to run the SKU module.")
     else:
         sku_raw = pd.read_csv(sku_file)
         sku = normalize_colnames(sku_raw)
 
+        # Ensure required columns exist
         required = ["SKU","Sales","Volume","Margin"]
         missing = [c for c in required if c not in sku.columns]
         if missing:
             st.error(f"Missing required columns: {missing}")
         else:
+            # Add optional columns if missing
+            for c in ['Width','Facings','Product Type','Variant','Item Size']:
+                if c not in sku.columns:
+                    sku[c] = ""
+
+            # Clean numeric columns
             sku['Sales'] = clean_sales_series(sku['Sales'])
             sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
             sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
+            sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(5.0)
+            sku['Facings'] = pd.to_numeric(sku['Facings'], errors='coerce').fillna(1)
 
+            # ---------------- SCORE & RANK ----------------
             def norm(series):
                 mx = series.replace(0, pd.NA).max()
-                if pd.isna(mx) or mx == 0:
+                if pd.isna(mx) or mx==0:
                     return pd.Series(0, index=series.index)
                 return series / mx
 
@@ -98,6 +112,7 @@ if module == "SKU Performance & Shelf Space":
             sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
             sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
 
+            # ---------------- RECOMMENDATIONS ----------------
             cutoff_expand = sku['Score'].quantile(0.70)
             cutoff_delist = sku['Score'].quantile(0.30)
             sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
@@ -107,7 +122,8 @@ if module == "SKU Performance & Shelf Space":
                 'Retain': "Balanced — maintain."
             })
 
-            st.sidebar.header("Shelf settings")
+            # ---------------- SIDEBAR SETTINGS ----------------
+            st.sidebar.header("Shelf & Variant Settings")
             expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
             retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
             delist_facings = st.sidebar.slider("Facings for Delist", 0, 5, 1)
@@ -115,99 +131,77 @@ if module == "SKU Performance & Shelf Space":
             shelf_width = st.sidebar.number_input("Shelf width per layer", 1.0, 10000.0, 100.0)
             num_layers = st.sidebar.number_input("Number of layers", 1, 10, 1)
             hide_delist = st.sidebar.checkbox("Hide Delist SKUs", value=False)
-            top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5,len(sku))), min(50,max(5,len(sku))))
+            top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5, len(sku))), min(50, max(5, len(sku))))
+            max_expand_per_type = st.sidebar.slider("Max Expand SKUs per Product Type", 1, 10, 2)
 
             total_shelf_space = shelf_width * num_layers
+
+            # ---------------- BASE FACINGS ----------------
             def base_fac(rec):
                 if rec=="Expand": return max(expand_facings, min_facings)
                 if rec=="Retain": return max(retain_facings, min_facings)
                 return delist_facings
+
             sku['Base Facings'] = sku['Recommendation'].apply(base_fac)
-
-            if 'Width' not in sku.columns:
-                sku['Width'] = st.sidebar.number_input("Default SKU width", 0.1, 100.0, 5.0)
-            else:
-                sku['Width'] = pd.to_numeric(sku['Width'], errors='coerce').fillna(
-                    st.sidebar.number_input("Default SKU width (fallback)", 0.1, 100.0, 5.0)
-                )
-
             sku['Suggested Facings'] = sku['Base Facings']
             sku['Space Needed'] = sku['Width'] * sku['Suggested Facings']
 
-            df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
-            total_space_used = df_filtered['Space Needed'].sum()
-            space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
-
-            # Allocate shelf safely
-            if not df_filtered.empty:
-                df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
-                df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
-                df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
-                df_alloc['Fits Shelf'] = True
-
-                remaining_space = total_shelf_space
-                for i, row in df_alloc.iterrows():
-                    space_needed = row['Space Needed Adjusted']
-                    if space_needed <= remaining_space:
-                        remaining_space -= space_needed
-                    else:
-                        max_facings = int(remaining_space / row['Width'])
-                        if max_facings > 0:
-                            df_alloc.at[i,'Adjusted Facings'] = max_facings
-                            df_alloc.at[i,'Space Needed Adjusted'] = max_facings * row['Width']
-                            remaining_space -= df_alloc.at[i,'Space Needed Adjusted']
-                            df_alloc.at[i,'Fits Shelf'] = False
+            # ---------------- VARIANT-AWARE ADJUSTMENT ----------------
+            def variant_adjustment(df):
+                df = df.sort_values('Score', ascending=False).copy()
+                expand_count = 0
+                for idx, row in df.iterrows():
+                    if row['Recommendation'] == "Expand":
+                        if expand_count < max_expand_per_type:
+                            expand_count += 1
                         else:
-                            df_alloc.at[i,'Adjusted Facings'] = 0
-                            df_alloc.at[i,'Space Needed Adjusted'] = 0
-                            df_alloc.at[i,'Fits Shelf'] = False
+                            df.at[idx, 'Recommendation'] = "Retain"
+                            df.at[idx, 'Justification'] = "Top variants limit reached — maintain."
+                return df
 
-                skus_that_fit = df_alloc[df_alloc['Fits Shelf']]
-                skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
-            else:
-                df_alloc = pd.DataFrame(columns=df_filtered.columns.tolist()+['Adjusted Facings','Space Needed Adjusted','Fits Shelf'])
-                skus_that_fit = df_alloc.copy()
-                skus_overflow = df_alloc.copy()
+            sku = sku.groupby('Product Type', group_keys=False).apply(variant_adjustment)
 
-            # Side-by-side display
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Shelf Usage")
+            # ---------------- SHELF ALLOCATION ----------------
+            df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
+            df_alloc = df_filtered.sort_values('Score', ascending=False).copy()
+            df_alloc['CumulativeSpace'] = df_alloc['Space Needed'].cumsum()
+            df_alloc['Fits Shelf'] = df_alloc['CumulativeSpace'] <= total_shelf_space
+
+            # ---------------- DISPLAY ----------------
+            st.subheader("Shelf usage & SKUs that cannot fit")
+            c1,c2 = st.columns([2,2])
+
+            total_space_used = df_alloc[df_alloc['Fits Shelf']]['Space Needed'].sum()
+            space_pct = (total_space_used / total_shelf_space) * 100 if total_shelf_space>0 else 0.0
+            with c1:
+                st.write("**Shelf Usage**")
                 st.progress(min(space_pct/100,1.0))
                 st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
-                if skus_overflow.empty:
-                    st.success("All SKUs fit on the shelf ✅")
-            with col2:
-                st.subheader("SKUs that cannot fit in shelf")
-                if skus_overflow.empty:
-                    st.info("No SKUs overflow — all fit on the shelf.")
-                else:
-                    st.dataframe(
-                        skus_overflow[['SKU','Score','Recommendation','Adjusted Facings','Space Needed Adjusted']],
-                        use_container_width=True
-                    )
+                st.write(f"SKUs allocated: {df_alloc['Fits Shelf'].sum()} / {len(df_alloc)}")
 
-            # SKU Recommendations table with download
-            st.subheader("SKU Recommendations")
-            def highlight_rec(v):
-                if v=="Expand": return "background-color:#d4f7d4"
-                if v=="Retain": return "background-color:#fff4cc"
-                if v=="Delist": return "background-color:#ffd6d6"
-                return ""
-            st.dataframe(
-                df_alloc[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Adjusted Facings','Space Needed Adjusted']]
-                .style.applymap(highlight_rec, subset=['Recommendation']),
-                use_container_width=True
-            )
-            excel_file = "SKU_Recommendations.xlsx"
-            df_alloc.to_excel(excel_file, index=False)
-            with open(excel_file, "rb") as f:
-                st.download_button(
-                    label="📥 Download SKU Recommendations",
-                    data=f,
-                    file_name=excel_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            skus_overflow = df_alloc[~df_alloc['Fits Shelf']]
+            with c2:
+                if skus_overflow.empty:
+                    st.success("✅ All SKUs fit in the shelf.")
+                else:
+                    st.write("**SKUs that cannot fit**")
+                    st.dataframe(skus_overflow[['SKU','Product Type','Variant','Item Size','Space Needed','Recommendation']], use_container_width=True)
+
+            # ---------------- TOP SKUs BY SPACE ----------------
+            st.subheader("Top SKUs by Space Needed")
+            df_chart = df_alloc[df_alloc['Fits Shelf']].sort_values('Space Needed', ascending=False).head(top_n)
+            import plotly.express as px
+            fig = px.bar(df_chart, x='Space Needed', y='SKU', orientation='h', color='Recommendation')
+            fig.update_layout(height=30*len(df_chart))
+            st.plotly_chart(fig, use_container_width=True)
+
+            # ---------------- DOWNLOAD EXCEL ----------------
+            st.subheader("Download SKU Recommendations")
+            download_cols = ['SKU','Product Type','Variant','Item Size','Sales','Volume','Margin','Score','Rank','Recommendation','Justification','Suggested Facings','Width','Space Needed']
+            excel_file = "sku_recommendations.xlsx"
+            df_alloc[download_cols].to_excel(excel_file, index=False)
+            with open(excel_file,"rb") as f:
+                st.download_button("Download Excel", f, file_name=excel_file)
 
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
