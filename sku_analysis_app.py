@@ -34,6 +34,12 @@ if module == "SKU Performance & Shelf Space":
             st.error(f"Missing columns: {', '.join(missing_cols)}")
             st.stop()
 
+        # --- USER INPUT: Shelf Space & Layers ---
+        st.sidebar.markdown("### 🏪 Shelf Settings")
+        shelf_width = st.sidebar.number_input("Shelf Width (cm)", min_value=50, max_value=5000, value=1000, step=10)
+        shelf_layers = st.sidebar.number_input("Number of Shelf Layers", min_value=1, max_value=10, value=4)
+        total_shelf_width = shelf_width * shelf_layers
+
         # --- Compute recommendations ---
         df['Retain'] = (df['Sales'] >= sales_threshold) & (df['Volume'] >= volume_threshold) & (df['Margins'] >= margin_threshold)
         df['Recommendation'] = np.where(df['Retain'], 'Retain', 'Delist')
@@ -46,8 +52,7 @@ if module == "SKU Performance & Shelf Space":
         df['WeightedScore'] = (0.3 * df['SalesNorm']) + (0.3 * df['VolumeNorm']) + (0.4 * df['MarginNorm'])
         df['Suggested Facings'] = (df['WeightedScore'] * 5).round().astype(int).clip(lower=1)
 
-        # Shelf capacity check
-        total_shelf_width = 1000  # assume fixed width
+        # Shelf capacity check based on user input
         df['TotalWidth'] = df['Width'] * df['Suggested Facings']
         df['Fits Shelf'] = df['TotalWidth'].cumsum() <= total_shelf_width
 
@@ -80,7 +85,7 @@ if module == "SKU Performance & Shelf Space":
                            file_name="SKU_Recommendations.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # --- Visualization ---
+        # --- Visualization (KEPT AS IS, since you liked it) ---
         st.subheader("📊 SKU Distribution by Product Type & Variant")
         fig, ax = plt.subplots(figsize=(10, 6))
         df.groupby(['Product Type','Variant']).size().unstack().plot(kind='bar', stacked=True, ax=ax)
@@ -91,6 +96,7 @@ if module == "SKU Performance & Shelf Space":
 
     else:
         st.info("⬆️ Please upload a CSV file to begin analysis.")
+
 
 # --- MODULE 2: SALES ANALYSIS ---
 elif module == "Sales Analysis":
