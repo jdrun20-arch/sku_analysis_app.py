@@ -138,7 +138,7 @@ if module == "SKU Performance & Shelf Space":
             total_space_used = df_filtered['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            # Allocate shelf
+            # Allocate shelf safely
             if not df_filtered.empty:
                 df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
                 df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
@@ -169,7 +169,7 @@ if module == "SKU Performance & Shelf Space":
                 skus_that_fit = df_alloc.copy()
                 skus_overflow = df_alloc.copy()
 
-            # Display side by side
+            # Side-by-side display
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("Shelf Usage")
@@ -187,7 +187,7 @@ if module == "SKU Performance & Shelf Space":
                         use_container_width=True
                     )
 
-            # SKU Recommendations table
+            # SKU Recommendations table with download
             st.subheader("SKU Recommendations")
             def highlight_rec(v):
                 if v=="Expand": return "background-color:#d4f7d4"
@@ -199,8 +199,6 @@ if module == "SKU Performance & Shelf Space":
                 .style.applymap(highlight_rec, subset=['Recommendation']),
                 use_container_width=True
             )
-
-            # Download Excel
             excel_file = "SKU_Recommendations.xlsx"
             df_alloc.to_excel(excel_file, index=False)
             with open(excel_file, "rb") as f:
@@ -285,14 +283,18 @@ elif module == "Sales Analysis":
                 c2.metric("Drop days", drops)
                 c3.metric("With insights", with_insight)
 
+                # Only display columns that exist
+                display_cols = [c for c in ['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note'] if c in merged.columns]
                 def style_sig(v):
-                    if v == "LIFT": return "background-color: #d4f7d4"
-                    if v == "DROP": return "background-color: #ffd6d6"
+                    if v=="LIFT": return "background-color:#d4f7d4"
+                    if v=="DROP": return "background-color:#ffd6d6"
                     return ""
-                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note']].style
-                             .applymap(style_sig, subset=['Signal'])
-                             .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note']),
-                             use_container_width=True)
+                st.dataframe(
+                    merged[display_cols].style
+                        .applymap(style_sig, subset=['Signal'] if 'Signal' in display_cols else None)
+                        .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note'] if 'Qualitative Note' in display_cols else None),
+                    use_container_width=True
+                )
 
 # ================= MODULE 3 =================
 elif module == "Submit Insight":
@@ -327,10 +329,10 @@ elif module == "Approve Insights":
             st.write(f"📅 {row['Date']} | 🏪 {row['Store Code']} | 📝 {row['Insight']}")
             col1,col2 = st.columns(2)
             if col1.button(f"Approve {i}"):
-                insights_df.loc[i, 'Status'] = "Approved"
+                insights_df.loc[i,'Status']="Approved"
                 write_insights_df(insights_df)
                 safe_rerun()
             if col2.button(f"Reject {i}"):
-                insights_df.loc[i, 'Status'] = "Rejected"
+                insights_df.loc[i,'Status']="Rejected"
                 write_insights_df(insights_df)
                 safe_rerun()
