@@ -1,4 +1,3 @@
-# ✅ FIXED VERSION OF FULL APP
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -150,7 +149,6 @@ if module == "SKU Performance & Shelf Space":
             st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
 
             st.subheader("Top SKUs by Space Needed")
-            import plotly.express as px
             df_chart = df_filtered.sort_values('Space Needed', ascending=False).head(top_n)
             fig = px.bar(df_chart, x='Space Needed', y='SKU', orientation='h', color='Recommendation')
             fig.update_layout(height=30*len(df_chart))
@@ -221,7 +219,6 @@ elif module == "Sales Analysis":
                         else f"Sales -{abs(r['ChangePct']):.0f}% vs baseline" if r['Signal']=="DROP" else "Normal"
                     ), axis=1)
 
-                # ✅ FIXED LINE
                 lifts = (merged['Signal']=="LIFT").sum()
                 drops = (merged['Signal']=="DROP").sum()
                 with_insight = (merged['Matched Insight'] != "").sum()
@@ -235,4 +232,48 @@ elif module == "Sales Analysis":
                     if v == "LIFT": return "background-color: #d4f7d4"
                     if v == "DROP": return "background-color: #ffd6d6"
                     return ""
-                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal']()]()
+                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note']].style
+                             .applymap(style_sig, subset=['Signal'])
+                             .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note']),
+                             use_container_width=True)
+
+# ========== MODULE 3 ==========
+elif module == "Submit Insight":
+    st.header("📝 Submit an Insight")
+    insights_df = ensure_insights_df()
+    with st.form("insight_form", clear_on_submit=True):
+        date = st.date_input("Date", datetime.today())
+        store_code = st.text_input("Store Code")
+        insight = st.text_area("Insight")
+        submitted = st.form_submit_button("Submit Insight")
+        if submitted:
+            new_row = pd.DataFrame([{
+                "Date": date.strftime("%Y-%m-%d"),
+                "Store Code": store_code,
+                "Insight": insight,
+                "Status": "Pending"
+            }])
+            insights_df = pd.concat([insights_df, new_row], ignore_index=True)
+            write_insights_df(insights_df)
+            st.success("Insight submitted!")
+            safe_rerun()
+
+# ========== MODULE 4 ==========
+elif module == "Approve Insights":
+    st.header("✅ Approve or Reject Insights")
+    insights_df = ensure_insights_df()
+    pending = insights_df[insights_df['Status'].str.lower()=="pending"]
+    if pending.empty:
+        st.info("No pending insights.")
+    else:
+        for i, row in pending.iterrows():
+            st.write(f"📅 {row['Date']} | 🏪 {row['Store Code']} | 📝 {row['Insight']}")
+            col1,col2 = st.columns(2)
+            if col1.button(f"Approve {i}"):
+                insights_df.loc[i, 'Status'] = "Approved"
+                write_insights_df(insights_df)
+                safe_rerun()
+            if col2.button(f"Reject {i}"):
+                insights_df.loc[i, 'Status'] = "Rejected"
+                write_insights_df(insights_df)
+                safe_rerun()
