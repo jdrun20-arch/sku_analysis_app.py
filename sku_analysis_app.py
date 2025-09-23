@@ -82,12 +82,10 @@ if module == "SKU Performance & Shelf Space":
         if missing:
             st.error(f"Missing required columns: {missing}")
         else:
-            # --- Clean numeric data ---
             sku['Sales'] = clean_sales_series(sku['Sales'])
             sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
             sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
 
-            # --- Scoring ---
             def norm(series):
                 mx = series.replace(0, pd.NA).max()
                 if pd.isna(mx) or mx == 0:
@@ -99,7 +97,6 @@ if module == "SKU Performance & Shelf Space":
             sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
             sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
 
-            # --- Recommendations ---
             cutoff_expand = sku['Score'].quantile(0.70)
             cutoff_delist = sku['Score'].quantile(0.30)
             sku['Recommendation'] = sku['Score'].apply(
@@ -111,7 +108,6 @@ if module == "SKU Performance & Shelf Space":
                 'Retain': "Balanced — maintain."
             })
 
-            # --- Shelf Settings ---
             st.sidebar.header("Shelf settings")
             expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
             retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
@@ -124,7 +120,6 @@ if module == "SKU Performance & Shelf Space":
 
             total_shelf_space = shelf_width * num_layers
 
-            # --- Calculate Space ---
             def base_fac(rec):
                 if rec == "Expand": return max(expand_facings, min_facings)
                 if rec == "Retain": return max(retain_facings, min_facings)
@@ -145,7 +140,6 @@ if module == "SKU Performance & Shelf Space":
             total_space_used = df_filtered['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space) * 100 if total_shelf_space > 0 else 0.0
 
-            # --- Display SKU Table ---
             st.subheader("SKU Recommendations")
             def highlight_rec(v):
                 if v=="Expand": return "background-color:#d4f7d4"
@@ -158,12 +152,11 @@ if module == "SKU Performance & Shelf Space":
                 use_container_width=True
             )
 
-            # --- Shelf Usage Overview ---
             st.subheader("Shelf usage")
             st.progress(min(space_pct/100, 1.0))
             st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
 
-            # --- Allocation & Auto-adjusted Facings ---
+            # Allocation & auto-adjusted facings
             df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
             df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
             df_alloc['Space Needed Adjusted'] = df_alloc['Width'] * df_alloc['Adjusted Facings']
@@ -199,7 +192,6 @@ if module == "SKU Performance & Shelf Space":
                     use_container_width=True
                 )
 
-            # --- Chart ---
             st.subheader("Top SKUs by Adjusted Space Needed")
             df_chart = skus_that_fit.sort_values('Space Needed Adjusted', ascending=False).head(top_n)
             fig = px.bar(df_chart, x='Space Needed Adjusted', y='SKU', orientation='h', color='Recommendation')
@@ -284,4 +276,48 @@ elif module == "Sales Analysis":
                     if v == "LIFT": return "background-color: #d4f7d4"
                     if v == "DROP": return "background-color: #ffd6d6"
                     return ""
-                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct
+                st.dataframe(merged[['Store Code','Date','Sales','Baseline','ChangePct','Signal','Qualitative Note']].style
+                             .applymap(style_sig, subset=['Signal'])
+                             .applymap(lambda x: "font-style: italic;" if isinstance(x,str) and x.startswith("User insight") else "", subset=['Qualitative Note']),
+                             use_container_width=True)
+
+# ========== MODULE 3: Submit Insight ==========
+elif module == "Submit Insight":
+    st.header("📝 Submit an Insight")
+    insights_df = ensure_insights_df()
+    with st.form("insight_form", clear_on_submit=True):
+        date = st.date_input("Date", datetime.today())
+        store_code = st.text_input("Store Code")
+        insight = st.text_area("Insight")
+        submitted = st.form_submit_button("Submit Insight")
+        if submitted:
+            new_row = pd.DataFrame([{
+                "Date": date.strftime("%Y-%m-%d"),
+                "Store Code": store_code,
+                "Insight": insight,
+                "Status": "Pending"
+            }])
+            insights_df = pd.concat([insights_df, new_row], ignore_index=True)
+            write_insights_df(insights_df)
+            st.success("Insight submitted!")
+            safe_rerun()
+
+# ========== MODULE 4: Approve Insights ==========
+elif module == "Approve Insights":
+    st.header("✅ Approve or Reject Insights")
+    insights_df = ensure_insights_df()
+    pending = insights_df[insights_df['Status'].str.lower()=="pending"]
+    if pending.empty:
+        st.info("No pending insights.")
+    else:
+        for i, row in pending.iterrows():
+            st.write(f"📅 {row['Date']} | 🏪 {row['Store Code']} | 📝 {row['Insight']}")
+            col1,col2 = st.columns(2)
+            if col1.button(f"Approve {i}"):
+                insights_df.loc[i, 'Status'] = "Approved"
+                write_insights_df(insights_df)
+                safe_rerun()
+            if col2.button(f"Reject {i}"):
+                insights_df.loc[i, 'Status'] = "Rejected"
+                write_insights_df(insights_df)
+                safe_rerun()
