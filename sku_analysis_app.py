@@ -147,7 +147,7 @@ if module == "1️⃣ SKU Performance & Shelf Space":
 
         # redistribute if delist facings == 0
         if delist_facings == 0:
-            delist_mask = df['Recommendation']=="Delist'
+            delist_mask = df['Recommendation'] == 'Delist'
             freed = (df.loc[delist_mask, 'Width'] * base_fac('Delist')).sum()
             mask_er = df['Recommendation'].isin(['Expand','Retain'])
             denom = (df.loc[mask_er, 'Width'] * df.loc[mask_er, 'Base Facings']).sum()
@@ -224,7 +224,7 @@ elif module == "2️⃣ Sales Analysis":
         req_sales = ['Date','Store Code','Sales']
         missing = [c for c in req_sales if c not in sales_df.columns]
         if missing:
-            st.error(f"Missing columns: {missing}. Accepted variants: StoreCode/Store_Code/Store Code, Sales, Date.")
+            st.error(f"Missing columns: {missing}. Accepted variants: StoreCode/Store_Code/Store Code, Sales/Sale/Amount, Date.")
             st.stop()
 
         # parse date and ensure numeric sales
@@ -355,7 +355,9 @@ elif module == "2️⃣ Sales Analysis":
         merged_sorted = merged.sort_values(sort_by) if sort_by else merged
 
         st.subheader("Detailed Sales Analysis")
-        styler = merged_sorted[display_cols].style.applymap(color_signal, subset=['Signal'] if 'Signal' in merged_sorted.columns else None)
+        styler = merged_sorted[display_cols].style
+        if 'Signal' in merged_sorted.columns:
+            styler = styler.applymap(color_signal, subset=['Signal'])
         if 'Qualitative Analysis' in merged_sorted.columns:
             styler = styler.applymap(italic_text, subset=['Qualitative Analysis'])
         st.dataframe(styler, use_container_width=True)
