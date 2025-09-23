@@ -4,38 +4,32 @@ import numpy as np
 import plotly.express as px
 import io
 
-st.set_page_config(page_title="SKU Performance & Shelf Space", layout="wide")
+st.set_page_config(page_title="Retail Insights App", layout="wide")
+st.title("🛒 Retail Insights Dashboard")
 
-st.title("SKU Analysis Dashboard")
-
-# --- SIDEBAR ---
+# --- SIDEBAR: Module Selector ---
 module = st.sidebar.radio(
-    "Select Module:",
-    ["SKU Performance & Shelf Space", "Sales Analysis", "Inventory Insights", "Promotions Analysis"]
+    "Choose Module:",
+    [
+        "SKU Performance & Shelf Space",
+        "Sales Analysis",
+        "Inventory Insights",
+        "Promotions Analysis"
+    ]
 )
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import io
-
-st.set_page_config(page_title="SKU Performance & Shelf Space", layout="wide")
-st.title("SKU Analysis Dashboard")
-
-# --- SIDEBAR ---
-with st.sidebar:
-    module = st.radio(
-        "Select Module:",
-        ["SKU Performance & Shelf Space", "Sales Analysis", "Inventory Insights", "Promotions Analysis"]
-    )
-
-# --- MODULE 1: SKU PERFORMANCE & SHELF SPACE ---
+# ===============================
+# MODULE 1: SKU PERFORMANCE & SHELF SPACE
+# ===============================
 if module == "SKU Performance & Shelf Space":
-    st.header("Module 1: SKU Performance & Shelf Space")
+    st.header("📊 SKU Performance & Shelf Space")
 
-    uploaded_file = st.sidebar.file_uploader("Upload SKU Performance CSV", type=["csv"])
-    if uploaded_file is not None:
+    uploaded_file = st.sidebar.file_uploader("Upload SKU CSV", type=["csv"])
+    shelf_capacity = st.sidebar.number_input("Shelf capacity (total width)", min_value=10, value=1000, step=50)
+
+    if uploaded_file is None:
+        st.info("📥 Please upload a CSV file with SKU data to get started.")
+    else:
         df = pd.read_csv(uploaded_file)
 
         required_columns = [
@@ -44,9 +38,9 @@ if module == "SKU Performance & Shelf Space":
         ]
         missing = [col for col in required_columns if col not in df.columns]
         if missing:
-            st.error(f"Missing columns in CSV: {', '.join(missing)}")
+            st.error(f"Missing required columns: {', '.join(missing)}")
         else:
-            # Calculate contributions
+            # --- CALCULATE PERFORMANCE METRICS ---
             df["Sales Contribution"] = df["Sales"] / df["Sales"].sum()
             df["Volume Contribution"] = df["Volume"] / df["Volume"].sum()
             df["Margin Contribution"] = df["Margins"] / df["Margins"].sum()
@@ -57,111 +51,130 @@ if module == "SKU Performance & Shelf Space":
                 0.2 * df["Margin Contribution"]
             )
 
+            # Suggested facings based on relative score
             df["Suggested Facings"] = np.ceil(df["Performance Score"] * 10).astype(int)
             df.loc[df["Suggested Facings"] < 1, "Suggested Facings"] = 1
 
-            df["Total Width"] = df["Suggested Facings"] * df["Width"]
-            shelf_capacity = 1000
-            total_required_width = df["Total Width"].sum()
-            df["Fits Shelf"] = total_required_width <= shelf_capacity
+            # Shelf space calculations
+            df["Space Needed"] = df["Suggested Facings"] * df["Width"]
+            df["Fits Shelf"] = True  # default; will check later
+            total_required_space = df["Space Needed"].sum()
 
-            df["Recommendation"] = np.where(df["Performance Score"] >= 0.05, "Expand",
-                                   np.where(df["Performance Score"] >= 0.02, "Retain", "Delist"))
+            # Recommendations
+            df["Recommendation"] = np.where(
+                df["Performance Score"] >= df["Performance Score"].quantile(0.7), "Expand",
+                np.where(df["Performance Score"] <= df["Performance Score"].quantile(0.3), "Delist", "Retain")
+            )
 
+            # --- SUMMARY ---
             summary = (
                 df.groupby(["Product Type", "Variant", "Recommendation"])
                 .size()
                 .reset_index(name="Count")
             )
 
-            # --- MOVE PRODUCT TYPE FILTER TO SIDEBAR ---
-            with st.sidebar:
-                product_types = summary["Product Type"].unique().tolist()
-                selected_types = st.multiselect(
-                    "Filter by Product Type:",
-                    options=product_types,
-                    default=product_types
-                )
+            # Sidebar filter
+            product_types = summary["Product Type"].unique().tolist()
+            selected_types = st.sidebar.multiselect(
+                "Filter by Product Type:",
+                options=product_types,
+                default=product_types
+            )
 
-            filtered_summary = summary[summary["Product Type"].isin(selected_types)]
-            filtered_df = df[df["Product Type"].isin(selected_types)]
+            df_filtered = df[df["Product Type"].isin(selected_types)]
+            summary_filtered = summary[summary["Product Type"].isin(selected_types)]
 
+            # --- DISPLAY SECTION ---
             col1, col2 = st.columns(2)
+
             with col1:
-                st.subheader("Shelf Usage")
-                st.metric("Total Required Width", f"{total_required_width:.2f}")
+                st.subheader("📏 Shelf Usage")
+                st.metric("Total Space Needed", f"{total_required_space:.1f}")
                 st.metric("Shelf Capacity", f"{shelf_capacity}")
-                st.metric("Usage %", f"{(total_required_width/shelf_capacity)*100:.2f}%")
+                st.metric("Usage %", f"{(total_required_space / shelf_capacity) * 100:.1f}%")
 
             with col2:
-                st.subheader("SKUs that Cannot Fit in Shelf")
-                overflow_df = filtered_df[filtered_df["Fits Shelf"] == False]
-                if overflow_df.empty:
+                st.subheader("🚫 SKUs That Cannot Fit")
+                if total_required_space <= shelf_capacity:
                     st.success("✅ All SKUs can fit in the shelf!")
                 else:
-                    st.warning(f"{len(overflow_df)} SKUs exceed shelf space!")
-                    st.dataframe(overflow_df[["SKU", "Product Type", "Variant", "Suggested Facings", "Total Width"]])
+                    # Sort by Space Needed and mark overflow
+                    df_sorted = df_filtered.sort_values("Space Needed", ascending=False).copy()
+                    df_sorted["CumulativeSpace"] = df_sorted["Space Needed"].cumsum()
+                    df_sorted["Fits Shelf"] = df_sorted["CumulativeSpace"] <= shelf_capacity
+                    overflow_df = df_sorted[df_sorted["Fits Shelf"] == False]
 
-            st.subheader("SKU Summary by Product Type & Variant")
-            st.dataframe(filtered_summary, use_container_width=True)
+                    if overflow_df.empty:
+                        st.success("✅ All selected SKUs fit in shelf!")
+                    else:
+                        st.warning(f"{len(overflow_df)} SKUs exceed shelf space!")
+                        st.dataframe(
+                            overflow_df[["SKU", "Product Type", "Variant", "Suggested Facings", "Space Needed"]],
+                            use_container_width=True
+                        )
 
-            if not filtered_summary.empty:
-                filtered_summary["Category-Variant"] = (
-                    filtered_summary["Product Type"] + " - " + filtered_summary["Variant"]
-                )
+            st.subheader("📋 SKU Summary by Product Type & Variant")
+            st.dataframe(summary_filtered, use_container_width=True)
 
-                fig_summary = px.bar(
-                    filtered_summary.sort_values("Count", ascending=True),
+            if not summary_filtered.empty:
+                summary_filtered["Product-Variant"] = summary_filtered["Product Type"] + " - " + summary_filtered["Variant"]
+                fig = px.bar(
+                    summary_filtered.sort_values("Count", ascending=True),
                     x="Count",
-                    y="Category-Variant",
+                    y="Product-Variant",
                     color="Recommendation",
                     orientation="h",
-                    text="Count",
-                    category_orders={"Recommendation": ["Expand", "Retain", "Delist"]}
+                    text="Count"
                 )
-                fig_summary.update_traces(textposition="outside")
-                fig_summary.update_layout(
-                    height=500,
-                    xaxis_title="Number of SKUs",
-                    yaxis_title="Product Type - Variant",
-                    legend_title="Recommendation",
-                    bargap=0.3
-                )
-                st.plotly_chart(fig_summary, use_container_width=True)
+                fig.update_traces(textposition="outside")
+                fig.update_layout(height=500, bargap=0.3, xaxis_title="Count")
+                st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("SKU Recommendation Table")
-            st.dataframe(filtered_df, use_container_width=True)
+            st.subheader("📑 SKU Recommendation Table")
+            display_cols = [
+                "SKU", "Product Type", "Variant", "Item Size", "Sales", "Volume", "Margins",
+                "Performance Score", "Recommendation", "Suggested Facings", "Width", "Space Needed"
+            ]
+            st.dataframe(df_filtered[display_cols], use_container_width=True)
 
+            # --- DOWNLOAD BUTTON ---
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                filtered_df.to_excel(writer, index=False, sheet_name="Recommendations")
+                df_filtered[display_cols].to_excel(writer, sheet_name="Recommendations", index=False)
 
             st.download_button(
-                label="📥 Download SKU Recommendations (Excel)",
+                label="📥 Download SKU Recommendations",
                 data=output.getvalue(),
                 file_name="sku_recommendations.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-# --- MODULE 2: SALES ANALYSIS ---
+
+# ===============================
+# MODULE 2: SALES ANALYSIS
+# ===============================
 elif module == "Sales Analysis":
-    st.header("Module 2: Sales Analysis")
-    uploaded_sales = st.file_uploader("Upload Sales CSV", type=["csv"])
+    st.header("📈 Sales Analysis")
+    uploaded_sales = st.sidebar.file_uploader("Upload Sales CSV", type=["csv"])
     if uploaded_sales is not None:
         sales_df = pd.read_csv(uploaded_sales)
         st.dataframe(sales_df.head(), use_container_width=True)
 
-# --- MODULE 3: INVENTORY INSIGHTS ---
+# ===============================
+# MODULE 3: INVENTORY INSIGHTS
+# ===============================
 elif module == "Inventory Insights":
-    st.header("Module 3: Inventory Insights")
-    uploaded_inventory = st.file_uploader("Upload Inventory CSV", type=["csv"])
+    st.header("📦 Inventory Insights")
+    uploaded_inventory = st.sidebar.file_uploader("Upload Inventory CSV", type=["csv"])
     if uploaded_inventory is not None:
         inv_df = pd.read_csv(uploaded_inventory)
         st.dataframe(inv_df.head(), use_container_width=True)
 
-# --- MODULE 4: PROMOTIONS ANALYSIS ---
+# ===============================
+# MODULE 4: PROMOTIONS ANALYSIS
+# ===============================
 elif module == "Promotions Analysis":
-    st.header("Module 4: Promotions Analysis")
-    uploaded_promos = st.file_uploader("Upload Promotions CSV", type=["csv"])
+    st.header("🏷 Promotions Analysis")
+    uploaded_promos = st.sidebar.file_uploader("Upload Promotions CSV", type=["csv"])
     if uploaded_promos is not None:
         promo_df = pd.read_csv(uploaded_promos)
         st.dataframe(promo_df.head(), use_container_width=True)
