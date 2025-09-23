@@ -230,7 +230,7 @@ if module == "SKU Performance & Shelf Space":
                 else:
                     st.info("No summary data to show.")
 
-            # ---------------- SHELF ALLOCATION (respect suggested facings, allow partial fitting) ----------------
+            # ---------------- SHELF ALLOCATION (respect suggested facings, allow partial fits) ----------------
             df_filtered = sku[sku['Recommendation'] != "Delist"] if hide_delist else sku.copy()
             df_alloc = df_filtered.sort_values('Score', ascending=False).copy()
             # initialize allocation columns
@@ -322,7 +322,6 @@ if module == "SKU Performance & Shelf Space":
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                 excel_df[download_cols_actual].to_excel(writer, index=False, sheet_name="SKU Recommendations")
-                writer.save()
             buf.seek(0)
             st.download_button(
                 label="📥 Download SKU Recommendations (Excel)",
