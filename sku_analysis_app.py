@@ -82,7 +82,6 @@ if module == "SKU Performance & Shelf Space":
         if missing:
             st.error(f"Missing required columns: {missing}")
         else:
-            # --- Prepare SKU data ---
             sku['Sales'] = clean_sales_series(sku['Sales'])
             sku['Volume'] = pd.to_numeric(sku['Volume'], errors='coerce').fillna(0)
             sku['Margin'] = pd.to_numeric(sku['Margin'], errors='coerce').fillna(0)
@@ -99,7 +98,6 @@ if module == "SKU Performance & Shelf Space":
             sku['Score'] = (sku['Sales_Norm']*0.3) + (sku['Volume_Norm']*0.3) + (sku['Margin_Norm']*0.4)
             sku['Rank'] = sku['Score'].rank(method='min', ascending=False).astype(int)
 
-            # --- Recommendations ---
             cutoff_expand = sku['Score'].quantile(0.70)
             cutoff_delist = sku['Score'].quantile(0.30)
             sku['Recommendation'] = sku['Score'].apply(lambda s: "Expand" if s>=cutoff_expand else ("Delist" if s<=cutoff_delist else "Retain"))
@@ -109,7 +107,6 @@ if module == "SKU Performance & Shelf Space":
                 'Retain': "Balanced — maintain."
             })
 
-            # --- Shelf settings ---
             st.sidebar.header("Shelf settings")
             expand_facings = st.sidebar.slider("Facings for Expand", 1, 10, 3)
             retain_facings = st.sidebar.slider("Facings for Retain", 1, 10, 2)
@@ -121,7 +118,6 @@ if module == "SKU Performance & Shelf Space":
             top_n = st.sidebar.slider("Top SKUs in chart", 5, min(100, max(5,len(sku))), min(50,max(5,len(sku))))
 
             total_shelf_space = shelf_width * num_layers
-
             def base_fac(rec):
                 if rec=="Expand": return max(expand_facings, min_facings)
                 if rec=="Retain": return max(retain_facings, min_facings)
@@ -142,7 +138,7 @@ if module == "SKU Performance & Shelf Space":
             total_space_used = df_filtered['Space Needed'].sum()
             space_pct = (total_space_used / total_shelf_space)*100 if total_shelf_space>0 else 0.0
 
-            # --- Allocate shelf space (fixed overflow logic) ---
+            # Allocate shelf
             if not df_filtered.empty:
                 df_alloc = df_filtered.sort_values("Score", ascending=False).copy()
                 df_alloc['Adjusted Facings'] = df_alloc['Suggested Facings']
@@ -155,7 +151,6 @@ if module == "SKU Performance & Shelf Space":
                     if space_needed <= remaining_space:
                         remaining_space -= space_needed
                     else:
-                        # cannot fit full suggested facings
                         max_facings = int(remaining_space / row['Width'])
                         if max_facings > 0:
                             df_alloc.at[i,'Adjusted Facings'] = max_facings
@@ -163,7 +158,6 @@ if module == "SKU Performance & Shelf Space":
                             remaining_space -= df_alloc.at[i,'Space Needed Adjusted']
                             df_alloc.at[i,'Fits Shelf'] = False
                         else:
-                            # cannot fit at all
                             df_alloc.at[i,'Adjusted Facings'] = 0
                             df_alloc.at[i,'Space Needed Adjusted'] = 0
                             df_alloc.at[i,'Fits Shelf'] = False
@@ -175,12 +169,25 @@ if module == "SKU Performance & Shelf Space":
                 skus_that_fit = df_alloc.copy()
                 skus_overflow = df_alloc.copy()
 
-            # --- Sidebar summary ---
-            st.sidebar.metric("SKUs that fit", len(skus_that_fit))
-            st.sidebar.metric("SKUs that cannot fit", len(skus_overflow))
-            st.sidebar.metric("Suggested Delist Count", len(skus_overflow))
+            # Display side by side
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Shelf Usage")
+                st.progress(min(space_pct/100,1.0))
+                st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
+                if skus_overflow.empty:
+                    st.success("All SKUs fit on the shelf ✅")
+            with col2:
+                st.subheader("SKUs that cannot fit in shelf")
+                if skus_overflow.empty:
+                    st.info("No SKUs overflow — all fit on the shelf.")
+                else:
+                    st.dataframe(
+                        skus_overflow[['SKU','Score','Recommendation','Adjusted Facings','Space Needed Adjusted']],
+                        use_container_width=True
+                    )
 
-            # --- Display ---
+            # SKU Recommendations table
             st.subheader("SKU Recommendations")
             def highlight_rec(v):
                 if v=="Expand": return "background-color:#d4f7d4"
@@ -188,28 +195,21 @@ if module == "SKU Performance & Shelf Space":
                 if v=="Delist": return "background-color:#ffd6d6"
                 return ""
             st.dataframe(
-                sku[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Space Needed']]
+                df_alloc[['SKU','Score','Rank','Recommendation','Justification','Suggested Facings','Adjusted Facings','Space Needed Adjusted']]
                 .style.applymap(highlight_rec, subset=['Recommendation']),
                 use_container_width=True
             )
 
-            st.subheader("SKUs that cannot fit in shelf")
-            if not skus_overflow.empty:
-                st.dataframe(
-                    skus_overflow[['SKU','Score','Recommendation','Adjusted Facings','Space Needed Adjusted']],
-                    use_container_width=True
+            # Download Excel
+            excel_file = "SKU_Recommendations.xlsx"
+            df_alloc.to_excel(excel_file, index=False)
+            with open(excel_file, "rb") as f:
+                st.download_button(
+                    label="📥 Download SKU Recommendations",
+                    data=f,
+                    file_name=excel_file,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-
-            st.subheader("Top SKUs by Adjusted Space Needed")
-            df_chart = skus_that_fit.sort_values('Space Needed Adjusted', ascending=False).head(top_n)
-            if not df_chart.empty:
-                fig = px.bar(df_chart, x='Space Needed Adjusted', y='SKU', orientation='h', color='Recommendation')
-                fig.update_layout(height=30*len(df_chart))
-                st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("Shelf usage")
-            st.progress(min(space_pct/100,1.0))
-            st.write(f"Used: {total_space_used:.1f} / {total_shelf_space:.1f} in ({space_pct:.1f}%)")
 
 # ================= MODULE 2 =================
 elif module == "Sales Analysis":
