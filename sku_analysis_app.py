@@ -14,15 +14,30 @@ module = st.sidebar.radio(
     ["SKU Performance & Shelf Space", "Sales Analysis", "Inventory Insights", "Promotions Analysis"]
 )
 
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import io
+
+st.set_page_config(page_title="SKU Performance & Shelf Space", layout="wide")
+st.title("SKU Analysis Dashboard")
+
+# --- SIDEBAR ---
+with st.sidebar:
+    module = st.radio(
+        "Select Module:",
+        ["SKU Performance & Shelf Space", "Sales Analysis", "Inventory Insights", "Promotions Analysis"]
+    )
+
 # --- MODULE 1: SKU PERFORMANCE & SHELF SPACE ---
 if module == "SKU Performance & Shelf Space":
     st.header("Module 1: SKU Performance & Shelf Space")
 
-    uploaded_file = st.file_uploader("Upload SKU Performance CSV", type=["csv"])
+    uploaded_file = st.sidebar.file_uploader("Upload SKU Performance CSV", type=["csv"])
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
 
-        # --- DATA PREPARATION ---
         required_columns = [
             "SKU", "Store Code", "Sales", "Volume", "Margins", "Width", "Facings",
             "Product Type", "Variant", "Item Size"
@@ -36,47 +51,42 @@ if module == "SKU Performance & Shelf Space":
             df["Volume Contribution"] = df["Volume"] / df["Volume"].sum()
             df["Margin Contribution"] = df["Margins"] / df["Margins"].sum()
 
-            # Weighted score to rank SKUs
             df["Performance Score"] = (
                 0.5 * df["Sales Contribution"] +
                 0.3 * df["Volume Contribution"] +
                 0.2 * df["Margin Contribution"]
             )
 
-            # --- FACINGS SUGGESTION ---
             df["Suggested Facings"] = np.ceil(df["Performance Score"] * 10).astype(int)
             df.loc[df["Suggested Facings"] < 1, "Suggested Facings"] = 1
 
-            # --- SHELF FIT CHECK ---
             df["Total Width"] = df["Suggested Facings"] * df["Width"]
-            shelf_capacity = 1000  # adjustable
+            shelf_capacity = 1000
             total_required_width = df["Total Width"].sum()
             df["Fits Shelf"] = total_required_width <= shelf_capacity
 
-            # --- RECOMMENDATION LOGIC ---
             df["Recommendation"] = np.where(df["Performance Score"] >= 0.05, "Expand",
                                    np.where(df["Performance Score"] >= 0.02, "Retain", "Delist"))
 
-            # --- SUMMARY TABLE ---
             summary = (
                 df.groupby(["Product Type", "Variant", "Recommendation"])
                 .size()
                 .reset_index(name="Count")
             )
 
-            # --- PRODUCT TYPE FILTER ---
-            product_types = summary["Product Type"].unique().tolist()
-            selected_types = st.multiselect(
-                "Filter by Product Type:",
-                options=product_types,
-                default=product_types
-            )
+            # --- MOVE PRODUCT TYPE FILTER TO SIDEBAR ---
+            with st.sidebar:
+                product_types = summary["Product Type"].unique().tolist()
+                selected_types = st.multiselect(
+                    "Filter by Product Type:",
+                    options=product_types,
+                    default=product_types
+                )
 
             filtered_summary = summary[summary["Product Type"].isin(selected_types)]
             filtered_df = df[df["Product Type"].isin(selected_types)]
 
             col1, col2 = st.columns(2)
-
             with col1:
                 st.subheader("Shelf Usage")
                 st.metric("Total Required Width", f"{total_required_width:.2f}")
@@ -92,7 +102,6 @@ if module == "SKU Performance & Shelf Space":
                     st.warning(f"{len(overflow_df)} SKUs exceed shelf space!")
                     st.dataframe(overflow_df[["SKU", "Product Type", "Variant", "Suggested Facings", "Total Width"]])
 
-            # --- SUMMARY TABLE & VISUAL ---
             st.subheader("SKU Summary by Product Type & Variant")
             st.dataframe(filtered_summary, use_container_width=True)
 
@@ -119,10 +128,7 @@ if module == "SKU Performance & Shelf Space":
                     bargap=0.3
                 )
                 st.plotly_chart(fig_summary, use_container_width=True)
-            else:
-                st.info("No SKUs match the selected filters.")
 
-            # --- FULL TABLE & DOWNLOAD ---
             st.subheader("SKU Recommendation Table")
             st.dataframe(filtered_df, use_container_width=True)
 
@@ -136,7 +142,6 @@ if module == "SKU Performance & Shelf Space":
                 file_name="sku_recommendations.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
 # --- MODULE 2: SALES ANALYSIS ---
 elif module == "Sales Analysis":
     st.header("Module 2: Sales Analysis")
