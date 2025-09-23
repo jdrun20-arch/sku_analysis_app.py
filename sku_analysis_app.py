@@ -1,4 +1,73 @@
-# ========== MODULE 1 ==========  
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import os
+from datetime import datetime
+
+st.set_page_config(page_title="Retail Insights App", layout="wide")
+
+# ---------- Config ----------
+INSIGHTS_FILE = "insights.csv"
+if not os.path.exists(INSIGHTS_FILE):
+    pd.DataFrame(columns=["Date", "Store Code", "Insight", "Status"]).to_csv(INSIGHTS_FILE, index=False)
+
+# ---------- Helpers ----------
+def safe_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        st.session_state["_refresh_needed"] = not st.session_state.get("_refresh_needed", False)
+        st.success("Change saved. Please refresh the page to see updates.")
+        st.stop()
+
+def ensure_insights_df():
+    df = pd.read_csv(INSIGHTS_FILE)
+    for c in ["Date","Store Code","Insight","Status"]:
+        if c not in df.columns:
+            df[c] = ""
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime("%Y-%m-%d")
+    return df
+
+def write_insights_df(df):
+    df.to_csv(INSIGHTS_FILE, index=False)
+
+def clean_sales_series(s: pd.Series) -> pd.Series:
+    s2 = s.astype(str).str.strip()
+    neg_mask = s2.str.match(r'^\(.*\)$')
+    s2 = s2.str.replace(r'[\(\)]', '', regex=True)
+    s2 = s2.str.replace(r'[^\d\.\-]', '', regex=True)
+    out = pd.to_numeric(s2, errors='coerce')
+    out[neg_mask] = -out[neg_mask]
+    return out.fillna(0.0)
+
+def normalize_colnames(df: pd.DataFrame) -> pd.DataFrame:
+    cols = {c: c.strip() for c in df.columns}
+    df = df.rename(columns=cols)
+    lowermap = {c.lower(): c for c in df.columns}
+    mapping = {}
+    for cand in ('date','day','transaction_date'):
+        if cand in lowermap: mapping[lowermap[cand]] = 'Date'; break
+    for cand in ('store code','store_code','storecode','store'):
+        if cand in lowermap: mapping[lowermap[cand]] = 'Store Code'; break
+    for cand in ('sales','sale','amount','revenue'):
+        if cand in lowermap: mapping[lowermap[cand]] = 'Sales'; break
+    for cand in ('sku','sku_code','product','item'):
+        if cand in lowermap: mapping[lowermap[cand]] = 'SKU'; break
+    for cand in ('width','item width','item width (in)','width_in','item_width'):
+        if cand in lowermap: mapping[lowermap[cand]] = 'Width'; break
+    return df.rename(columns=mapping)
+
+# ---------- Sidebar Module Selection ----------
+st.sidebar.title("Modules")
+module = st.sidebar.radio("Choose module:", [
+    "SKU Performance & Shelf Space",
+    "Sales Analysis",
+    "Submit Insight",
+    "Approve Insights"
+])
+
+# ========== MODULE 1: SKU Performance & Shelf Space ==========
 if module == "SKU Performance & Shelf Space":
     st.header("📊 SKU Performance & Shelf Space")
     sku_file = st.file_uploader("Upload SKU CSV (required: SKU, Sales, Volume, Margin). Optional: Width)", type=["csv"])
@@ -106,7 +175,6 @@ if module == "SKU Performance & Shelf Space":
                     remaining_space -= space_needed
                     df_alloc.at[i, 'Fits Shelf'] = True
                 else:
-                    # Reduce facings proportionally if possible
                     max_facings = max(1, int(remaining_space / row['Width']))
                     if max_facings > 0:
                         df_alloc.at[i, 'Adjusted Facings'] = max_facings
@@ -137,3 +205,12 @@ if module == "SKU Performance & Shelf Space":
             fig = px.bar(df_chart, x='Space Needed Adjusted', y='SKU', orientation='h', color='Recommendation')
             fig.update_layout(height=30*len(df_chart))
             st.plotly_chart(fig, use_container_width=True)
+
+# ========== MODULE 2: Sales Analysis ==========
+# ... Keep your existing Sales Analysis code here ...
+
+# ========== MODULE 3: Submit Insight ==========
+# ... Keep your existing Submit Insight code here ...
+
+# ========== MODULE 4: Approve Insights ==========
+# ... Keep your existing Approve Insights code here ...
