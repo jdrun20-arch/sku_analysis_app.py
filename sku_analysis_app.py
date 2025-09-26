@@ -7,7 +7,7 @@ import io
 import os
 import importlib.util
 from datetime import datetime
-#---
+#-
 
 st.set_page_config(page_title="Retail Insights App", layout="wide")
 
